@@ -1,0 +1,29 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "5000:5000"
+    environment:
+      NODE_ENV: production
+      JWT_SECRET: trademind-secret-2024-change-this
+      PORT: 5000
+    volumes:
+      - ./trademind.db:/app/trademind.db
+    container_name: trademind-api
+    command: npm start
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "3000:3000"
+    container_name: trademind-frontend
+    depends_on:
+      - api
+    restart: unless-stopped
+    environment:
+      REACT_APP_API_URL: http://localhost:5000/api
