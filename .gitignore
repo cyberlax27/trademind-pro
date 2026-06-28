@@ -1,0 +1,5 @@
+﻿node_modules/
+trademind.db
+.env
+.DS_Store
+*.log
