@@ -1,158 +1,170 @@
-﻿require('dotenv').config();
-const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
-const jwt = require('jsonwebtoken');
-const bcrypt = require('bcryptjs');
-const axios = require('axios');
+﻿require("dotenv").config();
+const express = require("express");
+const sqlite3 = require("sqlite3").verbose();
+const jwt = require("jsonwebtoken");
+const bcrypt = require("bcryptjs");
+const axios = require("axios");
 
 const app = express();
 app.use(express.json());
+app.use(express.static("."));
 
-const db = new sqlite3.Database('trademind.db');
-const JWT_SECRET = process.env.JWT_SECRET || 'secret-key';
+const db = new sqlite3.Database("trademind.db");
+const JWT_SECRET = process.env.JWT_SECRET || "secret-key-2024";
+
+console.log("✅ Environment Check:");
+console.log("PayPal Client ID:", process.env.PAYPAL_CLIENT_ID ? "✅" : "❌");
+console.log("PayPal Secret:", process.env.PAYPAL_SECRET ? "✅" : "❌");
+console.log("Paymongo Key:", process.env.PAYMONGO_SECRET_KEY ? "✅" : "❌");
 
 db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, tier TEXT DEFAULT 'free', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-  db.run(`CREATE TABLE IF NOT EXISTS bots (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, strategy TEXT, status TEXT DEFAULT 'inactive', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-  db.run(`CREATE TABLE IF NOT EXISTS brokers (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, api_key TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
-  db.run(`CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, currency TEXT, method TEXT, status TEXT, tier TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+  db.run("CREATE TABLE IF NOT EXISTS users (id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, tier TEXT DEFAULT 'free', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+  db.run("CREATE TABLE IF NOT EXISTS bots (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, strategy TEXT, status TEXT DEFAULT 'inactive', created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+  db.run("CREATE TABLE IF NOT EXISTS brokers (id INTEGER PRIMARY KEY, user_id INTEGER, name TEXT, api_key TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
+  db.run("CREATE TABLE IF NOT EXISTS payments (id INTEGER PRIMARY KEY, user_id INTEGER, amount REAL, currency TEXT, method TEXT, status TEXT, tier TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)");
 });
 
 const authMiddleware = (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'No token' });
+  const token = req.headers.authorization?.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "No token" });
   try {
     req.user = jwt.verify(token, JWT_SECRET);
     next();
   } catch (e) {
-    res.status(401).json({ error: 'Invalid token' });
+    res.status(401).json({ error: "Invalid token" });
   }
 };
 
-app.post('/api/auth/signup', async (req, res) => {
+app.post("/api/auth/signup", async (req, res) => {
   const { username, password } = req.body;
   const hash = await bcrypt.hash(password, 10);
-  db.run('INSERT INTO users (username, password) VALUES (?, ?)', [username, hash], function(err) {
-    if (err) return res.status(400).json({ error: 'User exists' });
+  db.run("INSERT INTO users (username, password) VALUES (?, ?)", [username, hash], function(err) {
+    if (err) return res.status(400).json({ error: "User exists" });
     const token = jwt.sign({ user_id: this.lastID, username }, JWT_SECRET);
     res.json({ token, user_id: this.lastID });
   });
 });
 
-app.post('/api/auth/login', (req, res) => {
+app.post("/api/auth/login", (req, res) => {
   const { username, password } = req.body;
-  db.get('SELECT * FROM users WHERE username = ?', [username], async (err, user) => {
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-    if (!(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: 'Invalid credentials' });
+  db.get("SELECT * FROM users WHERE username = ?", [username], async (err, user) => {
+    if (!user) return res.status(401).json({ error: "Invalid credentials" });
+    if (!(await bcrypt.compare(password, user.password))) return res.status(401).json({ error: "Invalid credentials" });
     const token = jwt.sign({ user_id: user.id, username }, JWT_SECRET);
     res.json({ token, user_id: user.id, tier: user.tier });
   });
 });
 
-app.get('/api/user/profile', authMiddleware, (req, res) => {
-  db.get('SELECT id, username, tier FROM users WHERE id = ?', [req.user.user_id], (err, user) => {
+app.get("/api/user/profile", authMiddleware, (req, res) => {
+  db.get("SELECT id, username, tier FROM users WHERE id = ?", [req.user.user_id], (err, user) => {
     res.json(user);
   });
 });
 
-app.get('/api/bots', authMiddleware, (req, res) => {
-  db.all('SELECT * FROM bots WHERE user_id = ?', [req.user.user_id], (err, bots) => {
+app.get("/api/bots", authMiddleware, (req, res) => {
+  db.all("SELECT * FROM bots WHERE user_id = ?", [req.user.user_id], (err, bots) => {
     res.json(bots || []);
   });
 });
 
-app.post('/api/bots', authMiddleware, (req, res) => {
+app.post("/api/bots", authMiddleware, (req, res) => {
   const { name, strategy } = req.body;
-  db.run('INSERT INTO bots (user_id, name, strategy) VALUES (?, ?, ?)', [req.user.user_id, name, strategy], function(err) {
-    if (err) return res.status(400).json({ error: 'Error creating bot' });
-    res.json({ id: this.lastID, name, strategy, status: 'inactive' });
+  db.run("INSERT INTO bots (user_id, name, strategy) VALUES (?, ?, ?)", [req.user.user_id, name, strategy], function(err) {
+    if (err) return res.status(400).json({ error: "Error creating bot" });
+    res.json({ id: this.lastID, name, strategy, status: "inactive" });
   });
 });
 
-app.delete('/api/bots/:id', authMiddleware, (req, res) => {
-  db.run('DELETE FROM bots WHERE id = ? AND user_id = ?', [req.params.id, req.user.user_id], (err) => {
-    res.json({ success: true });
-  });
+app.delete("/api/bots/:id", authMiddleware, (req, res) => {
+  db.run("DELETE FROM bots WHERE id = ? AND user_id = ?", [req.params.id, req.user.user_id]);
+  res.json({ success: true });
 });
 
-app.get('/api/brokers', authMiddleware, (req, res) => {
-  db.all('SELECT id, name FROM brokers WHERE user_id = ?', [req.user.user_id], (err, brokers) => {
+app.get("/api/brokers", authMiddleware, (req, res) => {
+  db.all("SELECT id, name FROM brokers WHERE user_id = ?", [req.user.user_id], (err, brokers) => {
     res.json(brokers || []);
   });
 });
 
-app.post('/api/brokers', authMiddleware, (req, res) => {
+app.post("/api/brokers", authMiddleware, (req, res) => {
   const { name, api_key } = req.body;
-  db.run('INSERT INTO brokers (user_id, name, api_key) VALUES (?, ?, ?)', [req.user.user_id, name, api_key], function(err) {
+  db.run("INSERT INTO brokers (user_id, name, api_key) VALUES (?, ?, ?)", [req.user.user_id, name, api_key], function(err) {
     res.json({ id: this.lastID, name });
   });
 });
 
-app.post('/api/payments/paypal/create-order', authMiddleware, async (req, res) => {
+app.post("/api/payments/paypal/create-order", authMiddleware, async (req, res) => {
   const { tier } = req.body;
-  const prices = { starter: '29.00', premium: '99.00', unlimited: '199.00' };
+  const prices = { starter: "29.00", premium: "99.00", unlimited: "199.00" };
+  console.log("💳 PayPal Order - Tier:", tier);
   try {
-    const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`).toString('base64');
-    const response = await axios.post('https://api-sandbox.paypal.com/v2/checkout/orders', {
-      intent: 'CAPTURE',
-      purchase_units: [{ amount: { currency_code: 'USD', value: prices[tier] } }],
-      return_url: 'http://localhost:5000',
-      cancel_url: 'http://localhost:5000'
-    }, { headers: { Authorization: `Basic ${auth}` } });
+    const auth = Buffer.from(process.env.PAYPAL_CLIENT_ID + ":" + process.env.PAYPAL_SECRET).toString("base64");
+    const response = await axios.post("https://api.paypal.com/v2/checkout/orders", {
+      intent: "CAPTURE",
+      purchase_units: [{ amount: { currency_code: "USD", value: prices[tier] } }],
+      return_url: "https://trademind-pro.onrender.com",
+      cancel_url: "https://trademind-pro.onrender.com"
+    }, { headers: { Authorization: "Basic " + auth } });
+    console.log("✅ PayPal Order Created");
     res.json({ order_id: response.data.id });
   } catch (e) {
+    console.error("❌ PayPal Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-app.post('/api/payments/paypal/capture-order', authMiddleware, async (req, res) => {
+app.post("/api/payments/paypal/capture-order", authMiddleware, async (req, res) => {
   const { order_id, tier } = req.body;
   const prices = { starter: 29, premium: 99, unlimited: 199 };
   try {
-    const auth = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`).toString('base64');
-    await axios.post(`https://api-sandbox.paypal.com/v2/checkout/orders/${order_id}/capture`, {}, 
-      { headers: { Authorization: `Basic ${auth}` } });
-    db.run('UPDATE users SET tier = ? WHERE id = ?', [tier, req.user.user_id]);
-    db.run('INSERT INTO payments (user_id, amount, currency, method, status, tier) VALUES (?, ?, ?, ?, ?, ?)',
-      [req.user.user_id, prices[tier], 'USD', 'paypal', 'completed', tier]);
+    const auth = Buffer.from(process.env.PAYPAL_CLIENT_ID + ":" + process.env.PAYPAL_SECRET).toString("base64");
+    await axios.post("https://api.paypal.com/v2/checkout/orders/" + order_id + "/capture", {}, { headers: { Authorization: "Basic " + auth } });
+    db.run("UPDATE users SET tier = ? WHERE id = ?", [tier, req.user.user_id]);
+    db.run("INSERT INTO payments (user_id, amount, currency, method, status, tier) VALUES (?, ?, ?, ?, ?, ?)", [req.user.user_id, prices[tier], "USD", "paypal", "completed", tier]);
     res.json({ success: true, tier });
   } catch (e) {
+    console.error("❌ PayPal Capture Error:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-app.post('/api/payments/paymongo/create-checkout', authMiddleware, async (req, res) => {
+app.post("/api/payments/paymongo/create-checkout", authMiddleware, async (req, res) => {
   const { tier } = req.body;
   const prices = { starter: 1500, premium: 4995, unlimited: 9995 };
+  console.log("💳 Paymongo Checkout - Tier:", tier);
   try {
-    const response = await axios.post('https://api.paymongo.com/v1/checkout_sessions', {
+    const auth = Buffer.from(process.env.PAYMONGO_SECRET_KEY + ":").toString("base64");
+    const response = await axios.post("https://api.paymongo.com/v1/checkout_sessions", {
       data: {
         attributes: {
-          send_email_receipt: false,
-          show_payment_details: true,
-          line_items: [{ name: `${tier} Plan`, amount: prices[tier] * 100, currency: 'PHP', quantity: 1 }],
-          success_url: 'http://localhost:5000',
-          cancel_url: 'http://localhost:5000'
+          payment_method_types: ["card", "gcash", "paymaya"],
+          redirect: {
+            success: "https://trademind-pro.onrender.com",
+            failed: "https://trademind-pro.onrender.com"
+          },
+          line_items: [{ name: tier + " Plan", amount: prices[tier] * 100, currency: "PHP", quantity: 1 }]
         }
       }
-    }, { auth: { username: process.env.PAYMONGO_SECRET_KEY } });
+    }, { headers: { Authorization: "Basic " + auth } });
+    console.log("✅ Paymongo Checkout Created");
     res.json({ checkout_url: response.data.data.attributes.checkout_url });
   } catch (e) {
+    console.error("❌ Paymongo Error:", e.response?.data || e.message);
     res.status(500).json({ error: e.message });
   }
 });
 
-app.get('/api/payments/history', authMiddleware, (req, res) => {
-  db.all('SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC', [req.user.user_id], (err, payments) => {
+app.get("/api/payments/history", authMiddleware, (req, res) => {
+  db.all("SELECT * FROM payments WHERE user_id = ? ORDER BY created_at DESC", [req.user.user_id], (err, payments) => {
     res.json(payments || []);
   });
 });
 
-app.get('/', (req, res) => {
-  res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>TradeMind Pro</title><style>*{margin:0;padding:0;box-sizing:border-box;}body{font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);min-height:100vh;display:flex;align-items:center;justify-content:center;}.container{background:white;border-radius:10px;box-shadow:0 10px 40px rgba(0,0,0,0.3);width:90%;max-width:500px;padding:40px;}h1{color:#333;margin-bottom:30px;text-align:center;}h3{color:#667eea;margin-top:20px;margin-bottom:10px;}.tabs{display:flex;gap:10px;margin-bottom:20px;}.tab-btn{flex:1;padding:10px;border:none;background:#eee;cursor:pointer;border-radius:5px;font-weight:600;}.tab-btn.active{background:#667eea;color:white;}.tab-content{display:none;}.tab-content.active{display:block;}input{width:100%;padding:10px;margin:10px 0;border:1px solid #ddd;border-radius:5px;}button{width:100%;padding:10px;background:#667eea;color:white;border:none;border-radius:5px;cursor:pointer;font-weight:600;margin-top:10px;}button:hover{background:#764ba2;}.price-card{border:1px solid #ddd;padding:15px;margin:10px 0;border-radius:5px;}.price-card h3{color:#667eea;margin-bottom:10px;}.price-card p{color:#666;margin:5px 0;font-size:14px;}.success{color:green;margin:10px 0;font-weight:600;}.error{color:red;margin:10px 0;font-weight:600;}</style></head><body><div class="container"><h1>🚀 TradeMind Pro</h1><div class="tabs"><button class="tab-btn active" onclick="showTab(this, 'auth')">Auth</button><button class="tab-btn" onclick="showTab(this, 'dashboard')">Dashboard</button><button class="tab-btn" onclick="showTab(this, 'payments')">Payments</button></div><div id="auth" class="tab-content active"><h3>Signup / Login</h3><input type="text" id="username" placeholder="Username"><input type="password" id="password" placeholder="Password"><button onclick="signup()">Signup</button><button onclick="login()">Login</button><p id="authMsg"></p></div><div id="dashboard" class="tab-content"><h3>Your Profile</h3><p id="profileMsg">Login to see profile</p><h3>Your Bots</h3><input type="text" id="botName" placeholder="Bot name"><input type="text" id="botStrategy" placeholder="Strategy"><button onclick="createBot()">Create Bot</button><div id="botsList"></div></div><div id="payments" class="tab-content"><h3>Subscription Plans</h3><div class="price-card"><h3>Starter - $29/mo</h3><p>3 bots, 2 brokers</p><button onclick="buyPayPal('starter')">Buy with PayPal</button><button onclick="buyPayMongo('starter')">Buy with GCash</button></div><div class="price-card"><h3>Premium - $99/mo</h3><p>10 bots, unlimited brokers</p><button onclick="buyPayPal('premium')">Buy with PayPal</button><button onclick="buyPayMongo('premium')">Buy with GCash</button></div><div class="price-card"><h3>Unlimited - $199/mo</h3><p>Unlimited bots, unlimited brokers</p><button onclick="buyPayPal('unlimited')">Buy with PayPal</button><button onclick="buyPayMongo('unlimited')">Buy with GCash</button></div><p id="paymentMsg"></p></div></div><script>const API=window.location.origin;let token=localStorage.getItem('token');function showTab(btn, tab){document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));document.getElementById(tab).classList.add('active');btn.classList.add('active');}async function signup(){const username=document.getElementById('username').value;const password=document.getElementById('password').value;const res=await fetch(API+'/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});const data=await res.json();if(data.token){localStorage.setItem('token',data.token);token=data.token;document.getElementById('authMsg').innerHTML='<p class="success">Signup successful!</p>';}else{document.getElementById('authMsg').innerHTML='<p class="error">'+data.error+'</p>';}}async function login(){const username=document.getElementById('username').value;const password=document.getElementById('password').value;const res=await fetch(API+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});const data=await res.json();if(data.token){localStorage.setItem('token',data.token);token=data.token;loadProfile();document.getElementById('authMsg').innerHTML='<p class="success">Login successful!</p>';}else{document.getElementById('authMsg').innerHTML='<p class="error">'+data.error+'</p>';}}async function loadProfile(){const res=await fetch(API+'/api/user/profile',{headers:{Authorization:'Bearer '+token}});const user=await res.json();document.getElementById('profileMsg').innerHTML='<p>Username: '+user.username+'<br>Tier: '+user.tier+'</p>';}async function createBot(){const name=document.getElementById('botName').value;const strategy=document.getElementById('botStrategy').value;const res=await fetch(API+'/api/bots',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({name,strategy})});const bot=await res.json();document.getElementById('botName').value='';document.getElementById('botStrategy').value='';loadBots();}async function loadBots(){const res=await fetch(API+'/api/bots',{headers:{Authorization:'Bearer '+token}});const bots=await res.json();document.getElementById('botsList').innerHTML=bots.map(b=>'<p>'+b.name+' ('+b.strategy+')</p>').join('');}async function buyPayPal(tier){if(!token)return document.getElementById('paymentMsg').innerHTML='<p class="error">Login first</p>';const res=await fetch(API+'/api/payments/paypal/create-order',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({tier})});const data=await res.json();window.location.href='https://www.sandbox.paypal.com/checkoutnow?token='+data.order_id;}async function buyPayMongo(tier){if(!token)return document.getElementById('paymentMsg').innerHTML='<p class="error">Login first</p>';const res=await fetch(API+'/api/payments/paymongo/create-checkout',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({tier})});const data=await res.json();window.location.href=data.checkout_url;}</script></body></html>`);
+app.get("/", (req, res) => {
+  res.send("<!DOCTYPE html><html><head><meta charset='UTF-8'><meta name='viewport' content='width=device-width, initial-scale=1.0'><title>TradeMind Pro</title><style>*{margin:0;padding:0;box-sizing:border-box}body{font-family:'Segoe UI',Tahoma,Geneva,sans-serif;background:linear-gradient(135deg,#0a0e27,#1a1f3a);min-height:100vh;color:#fff}.navbar{background:rgba(15,20,45,0.95);border-bottom:1px solid rgba(102,126,234,0.3);padding:12px 0;position:sticky;top:0;z-index:100}.navbar-content{max-width:1200px;margin:0 auto;padding:0 20px;display:flex;align-items:center;justify-content:space-between}.logo-section{display:flex;align-items:center;gap:15px}.logo-img{height:50px;width:auto;object-fit:contain}.brand-info h2{font-size:18px;font-weight:700;margin:0}.brand-info p{font-size:11px;color:#888;margin:2px 0 0 0}.container{max-width:1000px;margin:0 auto;padding:0 20px}.hero-section{text-align:center;padding:40px 20px;background:linear-gradient(135deg,rgba(102,126,234,0.1),rgba(0,212,255,0.05));border-radius:15px;margin:30px 0;border:1px solid rgba(102,126,234,0.2)}.hero-logo{max-width:400px;height:auto;margin:0 auto 30px}.hero-title{font-size:36px;font-weight:700;background:linear-gradient(135deg,#667eea,#00d4ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text;margin-bottom:10px}.card{background:rgba(102,126,234,0.05);border:1px solid rgba(102,126,234,0.3);border-radius:15px;padding:40px;margin-bottom:40px}.tabs{display:flex;gap:10px;margin-bottom:30px;border-bottom:1px solid rgba(102,126,234,0.2);flex-wrap:wrap}.tab-btn{padding:12px 25px;border:none;background:transparent;color:#aaa;cursor:pointer;font-weight:600;border-bottom:2px solid transparent;transition:all 0.3s}.tab-btn:hover{color:#667eea}.tab-btn.active{color:#00d4ff;border-bottom-color:#00d4ff}.tab-content{display:none}.tab-content.active{display:block}h3{color:#00d4ff;margin-bottom:20px}input{width:100%;padding:12px;margin:10px 0;border:1px solid rgba(102,126,234,0.3);border-radius:8px;background:rgba(102,126,234,0.05);color:#fff}button{width:100%;padding:12px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;margin-top:10px}.price-card{border:1px solid rgba(102,126,234,0.3);padding:25px;margin:15px 0;border-radius:10px;background:rgba(102,126,234,0.05)}.tier-badge{display:inline-block;background:linear-gradient(135deg,#667eea,#764ba2);padding:4px 12px;border-radius:20px;font-size:12px;margin-left:10px;text-transform:uppercase}.success{color:#00d4ff;margin:10px 0;font-weight:600}.error{color:#ff6b6b;margin:10px 0;font-weight:600}</style></head><body><div class='navbar'><div class='navbar-content'><div class='logo-section'><img src='logo-clean.png' alt='TradeMind Pro' class='logo-img' onerror='this.style.display=\"none\"'><div class='brand-info'><h2>TradeMind Pro</h2><p>Forex Trading Bot Platform</p></div></div><div id='navUserInfo' style='text-align:right;display:none'><div style='font-size:12px;color:#aaa' id='navUsername'>Loading...</div><div class='tier-badge' id='navTier'>free</div></div></div></div><div class='container'><div class='hero-section' id='heroSection'><img src='logo-community.png' alt='TradeMind Pro Community' class='hero-logo' onerror='this.style.display=\"none\"'><h1 class='hero-title'>Welcome to TradeMind Pro</h1><p style='color:#aaa;font-size:14px'>Professional Forex Trading Bot Platform</p></div><div class='card'><div class='tabs'><button class='tab-btn active' onclick='showTab(this,\"auth\")'>Authentication</button><button class='tab-btn' onclick='showTab(this,\"dashboard\")'>Dashboard</button><button class='tab-btn' onclick='showTab(this,\"payments\")'>Subscription</button></div><div id='auth' class='tab-content active'><h3>Login / Sign Up</h3><input type='text' id='username' placeholder='Username'><input type='password' id='password' placeholder='Password'><button onclick='signup()'>Create Account</button><button onclick='login()'>Login</button><p id='authMsg'></p></div><div id='dashboard' class='tab-content'><h3>Your Account</h3><p id='profileMsg'>👤 Login to view your profile</p><h3>Trading Bots</h3><input type='text' id='botName' placeholder='Bot name'><input type='text' id='botStrategy' placeholder='Strategy'><button onclick='createBot()'>Create Bot</button><div id='botsList'></div></div><div id='payments' class='tab-content'><h3>Subscription Plans</h3><div class='price-card'><h3>Starter - \$29/month</h3><p>✓ 3 Trading Bots</p><button onclick='buyPayPal(\"starter\")'>PayPal</button><button onclick='buyPayMongo(\"starter\")'>GCash/PayMaya</button></div><div class='price-card'><h3>Premium - \$99/month</h3><p>✓ 10 Trading Bots</p><button onclick='buyPayPal(\"premium\")'>PayPal</button><button onclick='buyPayMongo(\"premium\")'>GCash/PayMaya</button></div><div class='price-card'><h3>Unlimited - \$199/month</h3><p>✓ Unlimited Bots</p><button onclick='buyPayPal(\"unlimited\")'>PayPal</button><button onclick='buyPayMongo(\"unlimited\")'>GCash/PayMaya</button></div><p id='paymentMsg'></p></div></div></div><script>const API=window.location.origin;let token=localStorage.getItem('token');if(token){document.getElementById('heroSection').style.display='none';loadProfile()}function showTab(btn,tab){document.querySelectorAll('.tab-content').forEach(t=>t.classList.remove('active'));document.querySelectorAll('.tab-btn').forEach(b=>b.classList.remove('active'));document.getElementById(tab).classList.add('active');btn.classList.add('active')}async function signup(){const username=document.getElementById('username').value;const password=document.getElementById('password').value;if(!username||!password)return alert('Enter username and password');const res=await fetch(API+'/api/auth/signup',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});const data=await res.json();if(data.token){localStorage.setItem('token',data.token);token=data.token;document.getElementById('authMsg').innerHTML='<p class=\"success\">✓ Account created! Redirecting...</p>';setTimeout(()=>location.reload(),1500)}else{document.getElementById('authMsg').innerHTML='<p class=\"error\">✗ '+data.error+'</p>'}}async function login(){const username=document.getElementById('username').value;const password=document.getElementById('password').value;if(!username||!password)return alert('Enter username and password');const res=await fetch(API+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});const data=await res.json();if(data.token){localStorage.setItem('token',data.token);token=data.token;document.getElementById('authMsg').innerHTML='<p class=\"success\">✓ Login successful! Redirecting...</p>';setTimeout(()=>location.reload(),1500)}else{document.getElementById('authMsg').innerHTML='<p class=\"error\">✗ Invalid credentials</p>'}}async function loadProfile(){const res=await fetch(API+'/api/user/profile',{headers:{Authorization:'Bearer '+token}});const user=await res.json();document.getElementById('profileMsg').innerHTML='<p>👤 <strong>'+user.username+'</strong><span class=\"tier-badge\">'+user.tier.toUpperCase()+'</span></p>';document.getElementById('navUserInfo').style.display='block';document.getElementById('navUsername').innerHTML='👤 '+user.username;document.getElementById('navTier').innerHTML=user.tier.toUpperCase();loadBots()}async function createBot(){if(!token)return alert('Login first');const name=document.getElementById('botName').value;const strategy=document.getElementById('botStrategy').value;if(!name||!strategy)return alert('Enter bot name and strategy');const res=await fetch(API+'/api/bots',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({name,strategy})});const bot=await res.json();document.getElementById('botName').value='';document.getElementById('botStrategy').value='';loadBots()}async function loadBots(){const res=await fetch(API+'/api/bots',{headers:{Authorization:'Bearer '+token}});const bots=await res.json();document.getElementById('botsList').innerHTML=bots.length?bots.map(b=>'<div style=\"background:rgba(102,126,234,0.1);padding:12px;margin:10px 0;border-radius:6px\">🤖 '+b.name+' ('+b.strategy+')</div>').join(''):'<p style=\"color:#666\">No bots yet</p>'}async function buyPayPal(tier){if(!token)return document.getElementById('paymentMsg').innerHTML='<p class=\"error\">✗ Login first</p>';const res=await fetch(API+'/api/payments/paypal/create-order',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({tier})});const data=await res.json();if(data.order_id){window.location.href='https://www.paypal.com/pay?token='+data.order_id}else{document.getElementById('paymentMsg').innerHTML='<p class=\"error\">✗ Error: '+(data.error||'Unknown')+'</p>'}}async function buyPayMongo(tier){if(!token)return document.getElementById('paymentMsg').innerHTML='<p class=\"error\">✗ Login first</p>';const res=await fetch(API+'/api/payments/paymongo/create-checkout',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({tier})});const data=await res.json();if(data.checkout_url){window.location.href=data.checkout_url}else{document.getElementById('paymentMsg').innerHTML='<p class=\"error\">✗ Error: '+(data.error||'Unknown')+'</p>'}}</script></body></html>");
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+app.get("/api/health", (req, res) => res.json({ status: "ok" }));
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => console.log(`✅ Server running on http://localhost:${PORT}`));
+app.listen(PORT, () => console.log("✅ TradeMind Pro LIVE on http://localhost:" + PORT));
