@@ -1,0 +1,135 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradeMind Pro</title>
+  <script src="https://unpkg.com/lightweight-charts@4/dist/lightweight-charts.standalone.production.js"></script>
+  <style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:"Segoe UI",Tahoma,Geneva,sans-serif;background:linear-gradient(135deg,#0a0e27,#1a1f3a);min-height:100vh;color:#fff}
+.navbar{background:rgba(15,20,45,0.95);border-bottom:1px solid rgba(102,126,234,0.3);padding:12px 0;position:sticky;top:0;z-index:100}
+.navbar-content{max-width:1200px;margin:0 auto;padding:0 20px;display:flex;align-items:center;justify-content:space-between}
+.logo-section{display:flex;align-items:center;gap:15px}
+.logo-img{height:50px;width:auto;object-fit:contain}
+.brand-info{flex:1}
+.brand-info h2{font-size:18px;font-weight:700;margin:0}
+.brand-info p{font-size:11px;color:#888}
+#navUserInfo{display:none;text-align:right;display:flex;align-items:center;gap:15px}
+.logout-btn{background:linear-gradient(135deg,#ff6b6b,#ee5a6f);padding:8px 16px;border:none;border-radius:6px;color:#fff;cursor:pointer;font-size:12px;font-weight:600}
+.container{max-width:1200px;margin:0 auto;padding:0 20px}
+.hero-section{text-align:center;padding:40px 20px;background:linear-gradient(135deg,rgba(102,126,234,0.1),rgba(0,212,255,0.05));border-radius:15px;margin:30px 0;border:1px solid rgba(102,126,234,0.2)}
+.hero-logo{max-width:400px;height:auto;margin:0 auto 30px}
+.hero-title{font-size:36px;font-weight:700;background:linear-gradient(135deg,#667eea,#00d4ff);-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.card{background:rgba(102,126,234,0.05);border:1px solid rgba(102,126,234,0.3);border-radius:15px;padding:40px;margin-bottom:40px}
+.tabs{display:flex;gap:10px;margin-bottom:30px;border-bottom:1px solid rgba(102,126,234,0.2);flex-wrap:wrap;overflow-x:auto}
+.tab-btn{padding:12px 25px;border:none;background:transparent;color:#aaa;cursor:pointer;font-weight:600;border-bottom:2px solid transparent;white-space:nowrap}
+.tab-btn.active{color:#00d4ff;border-bottom-color:#00d4ff}
+.tab-content{display:none}
+.tab-content.active{display:block}
+h3{color:#00d4ff;margin-bottom:20px}
+h4{color:#00d4ff;margin-top:15px;font-size:14px}
+input,select,textarea{width:100%;padding:12px;margin:10px 0;border:1px solid rgba(102,126,234,0.3);border-radius:8px;background:rgba(102,126,234,0.05);color:#fff}
+button{width:100%;padding:12px;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;border:none;border-radius:8px;cursor:pointer;font-weight:600;margin-top:10px}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-bottom:20px}
+.chart-container{background:rgba(102,126,234,0.05);border:1px solid rgba(102,126,234,0.3);border-radius:15px;padding:20px;margin:20px 0;height:400px}
+#chart{width:100%;height:100%}
+.chart-title{color:#00d4ff;font-weight:700;margin-bottom:10px;font-size:14px}
+.price-card{border:1px solid rgba(102,126,234,0.3);padding:25px;margin:15px 0;border-radius:10px}
+.tier-badge{display:inline-block;background:linear-gradient(135deg,#667eea,#764ba2);padding:4px 12px;border-radius:20px;font-size:12px;text-transform:uppercase;margin:0 10px}
+.strategy-hint{font-size:12px;color:#888;margin-top:5px;padding:8px;background:rgba(102,126,234,0.1);border-radius:6px}
+.bot-item{background:rgba(102,126,234,0.1);padding:15px;margin:10px 0;border-radius:8px;border-left:3px solid #00d4ff}
+.bot-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:10px 0;font-size:12px}
+.stat-box{background:rgba(0,212,255,0.05);padding:8px;border-radius:4px;border-left:2px solid #00d4ff}
+.stat-label{color:#888;font-size:10px}
+.stat-value{font-size:14px;font-weight:700;color:#00d4ff}
+.demo-stat{background:rgba(102,126,234,0.1);padding:15px;border-radius:8px;margin:10px 0;border-left:3px solid #00d4ff}
+.position-item{background:rgba(102,126,234,0.1);padding:15px;margin:10px 0;border-radius:8px}
+.pnl-positive{color:#00ff00;font-weight:700}
+.pnl-negative{color:#ff6b6b;font-weight:700}
+.small-btn{width:auto;padding:6px 12px;font-size:11px;margin:5px;display:inline-block}
+.broker-guide{background:rgba(102,126,234,0.1);border-left:3px solid #00d4ff;padding:15px;margin:15px 0;border-radius:6px;font-size:12px;line-height:1.8}
+.guide-link{color:#00d4ff;text-decoration:none;cursor:pointer;font-weight:600}
+.bot-status{display:inline-block;padding:4px 8px;border-radius:4px;font-size:11px;font-weight:600;margin-left:10px}
+.status-active{background:#00ff00;color:#000}
+.status-inactive{background:#666;color:#fff}
+.subsection{margin:20px 0;padding:20px;background:rgba(102,126,234,0.05);border-radius:8px;border-left:3px solid #00d4ff}
+.bot-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:10px}
+  </style>
+</head>
+<body>
+<div class="navbar">
+  <div class="navbar-content">
+    <div class="logo-section">
+      <img src="logo-clean.png" class="logo-img" onerror="this.style.display='none'">
+      <div class="brand-info">
+        <h2>TradeMind Pro</h2>
+        <p>Forex Trading Bot Platform</p>
+      </div>
+    </div>
+    <div id="navUserInfo">
+      <div style="font-size:12px;color:#aaa" id="navUsername">Loading...</div>
+      <span class="tier-badge" id="navTier">free</span>
+      <button class="logout-btn" id="logoutBtn">Logout</button>
+    </div>
+  </div>
+</div>
+
+<div class="container">
+  <div class="hero-section" id="heroSection">
+    <img src="logo-community.png" class="hero-logo" onerror="this.style.display='none'">
+    <h1 class="hero-title">Welcome to TradeMind Pro</h1>
+    <p style="color:#aaa;font-size:14px">Professional Forex Trading Bot Platform with Paper Trading</p>
+  </div>
+
+  <div class="card" id="authCard">
+    <div class="tabs">
+      <button class="tab-btn active" id="authTabBtn">Authentication</button>
+    </div>
+    <div id="auth" class="tab-content active">
+      <h3>Login / Sign Up</h3>
+      <div id="authToggle">
+        <button id="signupToggleBtn">Don't have account? Sign Up</button>
+      </div>
+      <div id="loginForm">
+        <h3>Login</h3>
+        <input type="text" id="username" placeholder="Username">
+        <input type="password" id="password" placeholder="Password">
+        <button id="loginBtn">Login</button>
+        <p id="authMsg"></p>
+        <button id="toSignupBtn" style="background:transparent;color:#00d4ff;margin-top:20px">Create new account</button>
+      </div>
+      <div id="signupForm" style="display:none">
+        <h3>Sign Up</h3>
+        <input type="text" id="signupUsername" placeholder="Username">
+        <input type="email" id="signupEmail" placeholder="Email address">
+        <input type="password" id="signupPassword" placeholder="Password">
+        <input type="password" id="signupPassword2" placeholder="Confirm Password">
+        <button id="signupBtn">Create Account</button>
+        <p id="signupMsg"></p>
+        <button id="toLoginBtn" style="background:transparent;color:#00d4ff;margin-top:20px">Already have account? Login</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="mainCard" style="display:none">
+    <div class="tabs">
+      <button class="tab-btn active" data-tab="dashboard">Dashboard</button>
+      <button class="tab-btn" data-tab="robots">My Robots</button>
+      <button class="tab-btn" data-tab="demo">Demo Trading</button>
+      <button class="tab-btn" data-tab="subscription">Subscription</button>
+      <button class="tab-btn" data-tab="settings">Settings</button>
+      <button class="tab-btn" data-tab="about">About</button>
+    </div>
+    <div id="dashboard" class="tab-content active"><h3>Your Account</h3><p id="profileMsg">👤 Loading...</p><h3>Create Trading Bot</h3><input type="text" id="botName" placeholder="Bot name (e.g., MyBot1)"><select id="botType"><option value="demo">Demo Bot</option><option value="real">Real Bot</option></select><select id="botStrategy"><option value="">Select Trading Strategy...</option><option value="moving_average">📈 Moving Average Crossover</option><option value="rsi">📊 RSI Momentum</option><option value="macd">🎯 MACD Trend</option><option value="bollinger">🎪 Bollinger Bands</option><option value="fibonacci">🔢 Fibonacci Retracement</option></select><div id="strategyHint" class="strategy-hint"></div><button id="createBotBtn">Create Bot</button><h3 style="margin-top:30px">🏦 Connect Broker</h3><select id="brokerSelect"><option value="">Select Broker...</option><option value="demo">Demo Account (Built-in)</option><option value="xm">XM (XEMarkets)</option><option value="exness">Exness</option><option value="doto">Doto Markets</option></select><div id="brokerGuideContainer"></div><input type="password" id="brokerApiKey" placeholder="Paste your API Key here" style="display:none"><select id="brokerAccountType" style="display:none"><option value="demo">Demo Account</option><option value="live">Live Account</option></select><button id="brokerConnectBtn" onclick="connectBroker()" style="display:none">Connect Broker</button><div id="brokersList" style="margin-top:20px"></div></div>
+    <div id="robots" class="tab-content"><h3>🤖 My Trading Robots</h3><h4>✅ Active Robots</h4><div id="demoBotsList" style="margin-bottom:30px"></div><h4>⏸️ Stopped Robots</h4><div id="realBotsList"></div></div>
+    <div id="demo" class="tab-content"><h3>💰 Demo Trading Account - $10,000 Virtual Balance</h3><div class="row"><div class="demo-stat"><div style="color:#888;font-size:12px">Balance</div><div style="font-size:24px;font-weight:700">$<span id="demoBalance">10000</span></div></div><div class="demo-stat"><div style="color:#888;font-size:12px">Equity</div><div style="font-size:24px;font-weight:700">$<span id="demoEquity">10000</span></div></div><div class="demo-stat"><div style="color:#888;font-size:12px">Free Margin</div><div style="font-size:24px;font-weight:700">$<span id="demoFreeMargin">10000</span></div></div><div class="demo-stat"><div style="color:#888;font-size:12px">Used Margin</div><div style="font-size:24px;font-weight:700">$<span id="demoUsedMargin">0</span></div></div></div><h3>📊 Live Price Chart</h3><div class="chart-title" id="chartTitle">Select a symbol</div><div class="chart-container"><div id="chart"></div></div><h3>Open a Trade</h3><select id="assetClass"><option value="">Select Asset Class...</option><option value="forex">🌍 Forex</option><option value="crypto">₿ Crypto</option><option value="commodities">🛢️ Commodities</option></select><select id="assetSymbol"><option value="">Select Symbol...</option></select><select id="tradeType"><option value="BUY">BUY</option><option value="SELL">SELL</option></select><input type="number" id="lotSize" placeholder="Lot Size" min="0.01" step="0.01"><button id="executeTradeBtn">Execute Trade</button><p id="tradeMsg"></p><h3 style="margin-top:30px">Open Positions</h3><div id="openPositions"></div><h3 style="margin-top:30px">Pending Positions</h3><div id="pendingPositions"></div><h3 style="margin-top:30px">Closed Positions</h3><div id="closedTrades"></div></div>
+    <div id="subscription" class="tab-content"><h3>📊 Current Plan</h3><p id="currentPlan" style="font-size:14px;margin-bottom:20px"></p><h3>Upgrade Your Plan</h3><div class="price-card"><h3>Starter - $29/month</h3><p>✓ 3 Trading Bots<br>✓ 2 Broker Connections</p><button id="buyStarterBtn">Upgrade to Starter</button></div><div class="price-card"><h3>Premium - $99/month</h3><p>✓ 10 Trading Bots<br>✓ Unlimited Brokers</p><button id="buyPremiumBtn">Upgrade to Premium</button></div><div class="price-card"><h3>Unlimited - $199/month</h3><p>✓ Unlimited Bots<br>✓ Unlimited Brokers</p><button id="buyUnlimitedBtn">Upgrade to Unlimited</button></div></div>
+    <div id="settings" class="tab-content"><h3>⚙️ Settings</h3><div class="subsection"><h4>👤 Personal Account</h4><label>Email:</label><input type="email" id="settingsEmail" placeholder="Email"><label>Password:</label><input type="password" id="settingsPassword" placeholder="New password (leave blank to keep)"><button id="updateProfileBtn">Save Changes</button><button id="deleteAccountBtn" style="background:linear-gradient(135deg,#ff6b6b,#ee5a6f);margin-top:10px">Delete Account (Permanent)</button></div><div class="subsection"><h4>🔗 Connected Brokers</h4><div id="settingsBrokersList"></div></div><div class="subsection"><h4>📚 Help Center</h4><p style="margin-bottom:15px">Learn how to use TradeMind Pro features:</p><div id="helpCenter"></div></div><div class="subsection"><h4>💬 Support</h4><textarea id="supportMessage" placeholder="Describe your issue..." style="height:100px"></textarea><button id="sendSupportBtn">Send Support Request</button></div></div>
+    <div id="about" class="tab-content"><h3>📱 About TradeMind Pro</h3><p style="line-height:1.8;margin:15px 0"><strong>TradeMind Pro</strong> is a professional-grade Forex trading bot platform designed for traders of all experience levels. Our mission is to democratize algorithmic trading and help traders automate their strategies with confidence.</p><h4>🌟 Key Features</h4><p style="margin:15px 0">✓ <strong>Demo Account</strong> - Start with $10,000 virtual balance risk-free<br>✓ <strong>Live Charts</strong> - Real-time candlestick charts for Forex, Crypto, and Commodities<br>✓ <strong>Trading Bots</strong> - Create and manage multiple trading robots with 5 proven strategies<br>✓ <strong>Multi-Broker Support</strong> - Connect to XM, Exness, Doto Markets, and more<br>✓ <strong>Position Management</strong> - Track open, pending, and closed positions with live P&L<br>✓ <strong>Flexible Plans</strong> - Choose from Free, Starter, Premium, or Unlimited tier</p><h4>📈 Supported Assets</h4><p style="margin:15px 0"><strong>Forex:</strong> EUR/USD, GBP/USD, USD/JPY, AUD/USD, NZD/USD, USD/CAD<br><strong>Crypto:</strong> Bitcoin, Ethereum, Ripple, Cardano, Dogecoin<br><strong>Commodities:</strong> Gold, Silver, Crude Oil, Natural Gas, Corn</p><h4>🎯 Trading Strategies</h4><p style="margin:15px 0">1. <strong>Moving Average Crossover</strong> - Best for beginners, tracks price trends<br>2. <strong>RSI Momentum</strong> - Detects overbought/oversold conditions<br>3. <strong>MACD Trend</strong> - Combines momentum and trend analysis<br>4. <strong>Bollinger Bands</strong> - Uses support/resistance levels<br>5. <strong>Fibonacci Retracement</strong> - Level-based trading strategy</p><h4>🔒 Security & Privacy</h4><p style="margin:15px 0">Your account is protected with industry-standard encryption. API keys are never stored in plain text, and all transactions are secured through PayPal's payment gateway.</p><h4>📧 Contact</h4><p style="margin:15px 0">Need help? Use the Support section in Settings to reach our team, or check the Help Center for detailed guides.</p></div>
+  </div>
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
