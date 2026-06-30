@@ -5,6 +5,7 @@ let assets = {};
 let brokersList = {};
 let chart = null;
 let candleSeries = null;
+let allBots = [];
 
 const ASSET_NAMES = {
   "EURUSD": "EUR/USD - Euro vs Dollar", "GBPUSD": "GBP/USD - British Pound vs Dollar", "USDJPY": "USD/JPY - Dollar vs Yen",
@@ -182,7 +183,7 @@ function updateAssetSymbols() {
   const symbols = assets[assetClass] || [];
   const symbolSelect = document.getElementById("assetSymbol");
   if (symbols.length > 0) {
-    symbolSelect.innerHTML = "<option value=''>Select Symbol...</option>" + symbols.map(s => "<option value='" + s + "'>" + s + "</option>").join("");
+    symbolSelect.innerHTML = "<option value=''>Select Symbol...</option>" + symbols.map(s => "<option value='" + s + "'>" + ASSET_NAMES[s] || s + "</option>").join("");
   } else {
     symbolSelect.innerHTML = "<option value=''>No symbols available</option>";
   }
@@ -219,7 +220,8 @@ async function createBot() {
       document.getElementById("botName").value = "";
       document.getElementById("botStrategy").value = "";
       document.getElementById("strategyHint").innerHTML = "";
-      loadBots();
+      await loadBots();
+      await loadRobots();
     }
   } catch (e) {
     alert("Error creating bot: " + e.message);
@@ -230,7 +232,8 @@ async function loadBots() {
   try {
     const res = await fetch(API + "/api/bots", {headers: {Authorization: "Bearer " + token}});
     if (!res.ok) throw new Error("Failed to load bots");
-    await res.json();
+    allBots = await res.json();
+    console.log("Bots loaded:", allBots);
   } catch (e) {
     console.error("Error loading bots:", e);
   }
@@ -241,7 +244,9 @@ async function loadRobots() {
     const res = await fetch(API + "/api/bots", {headers: {Authorization: "Bearer " + token}});
     if (!res.ok) throw new Error("Failed to load robots");
     const bots = await res.json();
+    allBots = bots;
     await loadStrategies();
+    
     const activeBots = bots.filter(b => b.status === "active");
     const stoppedBots = bots.filter(b => b.status !== "active");
     
@@ -249,7 +254,8 @@ async function loadRobots() {
       try {
         const statsRes = await fetch(API + "/api/bots/" + b.id + "/stats", {headers: {Authorization: "Bearer " + token}});
         const stats = await statsRes.json();
-        return '<div class="bot-item"><div class="bot-header"><div><strong>🤖 ' + b.name + '</strong><br><small>' + (strategies[b.strategy]?.name || '') + '</small></div><div><span class="bot-status status-active">ACTIVE</span></div></div><div class="bot-stats"><div class="stat-box"><div class="stat-label">Bot Profit</div><div class="stat-value">$' + stats.bot_profit.toFixed(2) + '</div></div><div class="stat-box"><div class="stat-label">Current P&L</div><div class="stat-value">$' + stats.current_pnl.toFixed(2) + '</div></div></div><button class="small-btn" onclick="toggleBotStatus(' + b.id + ', \'active\')">Stop</button><button class="small-btn" onclick="deleteBot(' + b.id + ')" style="background:#ff6b6b">Delete</button></div>';
+        const activePositions = stats.trade_count > 0 ? "🟢 ACTIVELY TRADING" : "⚪ Waiting for signals";
+        return '<div class="bot-item"><div class="bot-header"><div><strong>🤖 ' + b.name + '</strong><br><small>' + (strategies[b.strategy]?.name || '') + '</small></div><div><span class="bot-status status-active">ACTIVE</span></div></div><div class="bot-stats"><div class="stat-box"><div class="stat-label">Bot Profit</div><div class="stat-value">$' + stats.bot_profit.toFixed(2) + '</div></div><div class="stat-box"><div class="stat-label">Current P&L</div><div class="stat-value">$' + stats.current_pnl.toFixed(2) + '</div></div></div><div style="padding:8px;font-size:11px;color:#00ff00">' + activePositions + ' (' + stats.trade_count + ' trades)</div><button class="small-btn" onclick="toggleBotStatus(' + b.id + ', \'active\')">Stop</button><button class="small-btn" onclick="deleteBot(' + b.id + ')" style="background:#ff6b6b">Delete</button></div>';
       } catch (e) {
         return '<div class="bot-item"><strong>🤖 ' + b.name + '</strong> (Error loading stats)</div>';
       }
@@ -259,7 +265,7 @@ async function loadRobots() {
       try {
         const statsRes = await fetch(API + "/api/bots/" + b.id + "/stats", {headers: {Authorization: "Bearer " + token}});
         const stats = await statsRes.json();
-        return '<div class="bot-item"><div class="bot-header"><div><strong>🤖 ' + b.name + '</strong><br><small>' + (strategies[b.strategy]?.name || '') + '</small></div><div><span class="bot-status status-inactive">STOPPED</span></div></div><div class="bot-stats"><div class="stat-box"><div class="stat-label">Bot Profit</div><div class="stat-value">$' + stats.bot_profit.toFixed(2) + '</div></div><div class="stat-box"><div class="stat-label">Trading Volume</div><div class="stat-value">' + stats.trade_count + ' trades</div></div></div><button class="small-btn" onclick="toggleBotStatus(' + b.id + ', \'inactive\')">Start</button><button class="small-btn" onclick="deleteBot(' + b.id + ')" style="background:#ff6b6b">Delete</button></div>';
+        return '<div class="bot-item"><div class="bot-header"><div><strong>🤖 ' + b.name + '</strong><br><small>' + (strategies[b.strategy]?.name || '') + '</small></div><div><span class="bot-status status-inactive">STOPPED</span></div></div><div class="bot-stats"><div class="stat-box"><div class="stat-label">Bot Profit</div><div class="stat-value">$' + stats.bot_profit.toFixed(2) + '</div></div><div class="stat-box"><div class="stat-label">Total Trades</div><div class="stat-value">' + stats.trade_count + '</div></div></div><button class="small-btn" onclick="toggleBotStatus(' + b.id + ', \'inactive\')">Start</button><button class="small-btn" onclick="deleteBot(' + b.id + ')" style="background:#ff6b6b">Delete</button></div>';
       } catch (e) {
         return '<div class="bot-item"><strong>🤖 ' + b.name + '</strong> (Error loading stats)</div>';
       }
@@ -430,7 +436,8 @@ async function executeTrade() {
     });
     const data = await res.json();
     if (data.success) {
-      document.getElementById("tradeMsg").innerHTML = "<p style='color:#00d4ff'>✓ Trade opened at $" + data.entry_price.toFixed(2) + "</p>";
+      const assetName = ASSET_NAMES[symbol] || symbol;
+      document.getElementById("tradeMsg").innerHTML = "<p style='color:#00d4ff'>✓ Trade opened: " + assetName + " at $" + data.entry_price.toFixed(2) + "</p>";
       document.getElementById("lotSize").value = "";
       document.getElementById("assetSymbol").value = "";
       await refreshDemo();
@@ -447,7 +454,12 @@ async function loadPositions() {
     const res = await fetch(API + "/api/demo/positions", {headers: {Authorization: "Bearer " + token}});
     if (!res.ok) throw new Error("Failed to load positions");
     const positions = await res.json();
-    document.getElementById("openPositions").innerHTML = positions.length ? positions.map(p => "<div class='position-item'><div><strong>" + p.symbol + "</strong> (" + p.type + ") x" + p.lot_size.toFixed(2) + "<br><small>Entry: $" + p.entry_price.toFixed(2) + " | Current: $" + p.current_price.toFixed(2) + " | P&L: <span class='" + (p.pnl >= 0 ? "pnl-positive" : "pnl-negative") + "'>$" + p.pnl.toFixed(2) + "</span></small></div><div><button class='small-btn' onclick='closePosition(" + p.id + ")'>Close</button></div></div>").join("") : "<p style='color:#666'>No open positions</p>";
+    document.getElementById("openPositions").innerHTML = positions.length ? positions.map(p => {
+      const assetName = ASSET_NAMES[p.symbol] || p.symbol;
+      const botInfo = allBots.find(b => b.id === p.bot_id);
+      const botLabel = botInfo ? " (Bot: " + botInfo.name + ")" : " (Manual Trade)";
+      return "<div class='position-item'><div><strong>" + assetName + "</strong>" + botLabel + " (" + p.type + ") x" + p.lot_size.toFixed(2) + "<br><small>Entry: $" + p.entry_price.toFixed(2) + " | Current: $" + p.current_price.toFixed(2) + " | P&L: <span class='" + (p.pnl >= 0 ? "pnl-positive" : "pnl-negative") + "'>$" + p.pnl.toFixed(2) + "</span></small></div><div><button class='small-btn' onclick='closePosition(" + p.id + ")'>Close</button></div></div>";
+    }).join("") : "<p style='color:#666'>No open positions</p>";
   } catch (e) {
     console.error("Error loading positions:", e);
   }
@@ -458,7 +470,10 @@ async function loadPendingPositions() {
     const res = await fetch(API + "/api/demo/pending", {headers: {Authorization: "Bearer " + token}});
     if (!res.ok) throw new Error("Failed to load pending positions");
     const positions = await res.json();
-    document.getElementById("pendingPositions").innerHTML = positions.length ? positions.map(p => "<div class='position-item'><strong>" + p.symbol + "</strong> (" + p.type + ") - Entry Pending at $" + p.entry_price.toFixed(2) + "</div>").join("") : "<p style='color:#666'>No pending positions</p>";
+    document.getElementById("pendingPositions").innerHTML = positions.length ? positions.map(p => {
+      const assetName = ASSET_NAMES[p.symbol] || p.symbol;
+      return "<div class='position-item'><strong>" + assetName + "</strong> (" + p.type + ") - Entry Pending at $" + p.entry_price.toFixed(2) + "</div>";
+    }).join("") : "<p style='color:#666'>No pending positions</p>";
   } catch (e) {
     console.error("Error loading pending positions:", e);
   }
@@ -488,7 +503,10 @@ async function loadTrades() {
     const res = await fetch(API + "/api/demo/closed", {headers: {Authorization: "Bearer " + token}});
     if (!res.ok) throw new Error("Failed to load trades");
     const trades = await res.json();
-    document.getElementById("closedTrades").innerHTML = trades.length ? "<table style='width:100%;font-size:12px'><tr style='border-bottom:1px solid rgba(102,126,234,0.3)'><td style='padding:8px'>Symbol</td><td style='padding:8px'>Type</td><td style='padding:8px'>Size</td><td style='padding:8px'>Entry</td><td style='padding:8px'>Exit</td><td style='padding:8px'>P&L</td></tr>" + trades.map(t => "<tr style='border-bottom:1px solid rgba(102,126,234,0.1)'><td style='padding:8px'>" + t.symbol + "</td><td style='padding:8px'>" + t.type + "</td><td style='padding:8px'>" + t.lot_size.toFixed(2) + "</td><td style='padding:8px'>$" + t.entry_price.toFixed(2) + "</td><td style='padding:8px'>$" + t.exit_price.toFixed(2) + "</td><td style='padding:8px;color:" + (t.pnl >= 0 ? "#00ff00" : "#ff6b6b") + "'>$" + t.pnl.toFixed(2) + "</td></tr>").join("") + "</table>" : "<p style='color:#666'>No closed trades</p>";
+    document.getElementById("closedTrades").innerHTML = trades.length ? "<table style='width:100%;font-size:12px'><tr style='border-bottom:1px solid rgba(102,126,234,0.3)'><td style='padding:8px'>Asset</td><td style='padding:8px'>Type</td><td style='padding:8px'>Size</td><td style='padding:8px'>Entry</td><td style='padding:8px'>Exit</td><td style='padding:8px'>P&L</td></tr>" + trades.map(t => {
+      const assetName = ASSET_NAMES[t.symbol] || t.symbol;
+      return "<tr style='border-bottom:1px solid rgba(102,126,234,0.1)'><td style='padding:8px'>" + assetName + "</td><td style='padding:8px'>" + t.type + "</td><td style='padding:8px'>" + t.lot_size.toFixed(2) + "</td><td style='padding:8px'>$" + t.entry_price.toFixed(2) + "</td><td style='padding:8px'>$" + t.exit_price.toFixed(2) + "</td><td style='padding:8px;color:" + (t.pnl >= 0 ? "#00ff00" : "#ff6b6b") + "'>$" + t.pnl.toFixed(2) + "</td></tr>";
+    }).join("") + "</table>" : "<p style='color:#666'>No closed trades</p>";
   } catch (e) {
     console.error("Error loading trades:", e);
   }
