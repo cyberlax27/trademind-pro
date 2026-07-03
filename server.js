@@ -352,7 +352,7 @@ async function getPayPalAccessToken() {
 
 app.post('/api/payments/paypal/create-order', authenticate, async (req, res) => {
   const { tier } = req.body;
-  const prices = { starter: '29.00', premium: '99.00', unlimited: '199.00' };
+  const prices = { starter: '29.00', premium: '79.00', unlimited: '199.00' };
   if (!prices[tier]) return res.status(400).json({ error: 'Invalid tier' });
 
   try {
@@ -385,7 +385,7 @@ app.post('/api/payments/paypal/create-order', authenticate, async (req, res) => 
 
 app.post('/api/payments/paypal/capture-order', authenticate, async (req, res) => {
   const { order_id, tier } = req.body;
-  const prices = { starter: 29, premium: 99, unlimited: 199 };
+  const prices = { starter: 29, premium: 79, unlimited: 199 };
   if (!order_id || !prices[tier]) return res.status(400).json({ error: 'Missing order_id or invalid tier' });
 
   try {
@@ -491,3 +491,4 @@ cron.schedule('*/1 * * * *', () => {
 });
 
 app.listen(PORT, () => console.log(`✓ Server running on port ${PORT}`));
+
