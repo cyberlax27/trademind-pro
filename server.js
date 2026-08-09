@@ -10,11 +10,25 @@ const cron = require('node-cron');
 const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-2024';
+if (!process.env.JWT_SECRET) {
+  console.warn('⚠️  JWT_SECRET env var is not set — falling back to a weak, publicly-known default. Set a long random JWT_SECRET in Render\'s environment variables.');
+}
 
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
 const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
 const PAYPAL_MODE = process.env.PAYPAL_MODE === 'live' ? 'live' : 'sandbox';
 const PAYPAL_BASE = PAYPAL_MODE === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+
+// Loud startup diagnostics: a wrong/missing PAYPAL_MODE on Render is the
+// single most common cause of "PayPal payments always fail" — it fails
+// silently otherwise (every request just 500s), so surface it at boot.
+if (!PAYPAL_CLIENT_ID || !PAYPAL_SECRET) {
+  console.warn('⚠️  PAYPAL_CLIENT_ID or PAYPAL_SECRET is not set — PayPal checkout will fail.');
+} else if (process.env.PAYPAL_MODE !== 'live' && process.env.PAYPAL_MODE !== 'sandbox') {
+  console.warn(`⚠️  PAYPAL_MODE env var is not explicitly set to "live" or "sandbox" — defaulting to SANDBOX (${PAYPAL_BASE}). If you have live credentials configured, set PAYPAL_MODE=live in Render's environment variables or every checkout will fail against the live keys.`);
+} else {
+  console.log(`✓ PayPal configured in ${PAYPAL_MODE.toUpperCase()} mode (${PAYPAL_BASE})`);
+}
 
 app.set('trust proxy', 1);
 app.use(express.json());
