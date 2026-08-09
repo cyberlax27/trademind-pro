@@ -576,6 +576,7 @@ app.post('/api/payments/paymongo/create-checkout', authenticate, async (req, res
     await dbRun('UPDATE payments SET provider_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [session.id, pending.lastID]);
     res.json({ checkout_url: session.attributes.checkout_url, payment_id: pending.lastID });
   } catch (error) {
+    console.error('PayMongo checkout error:', error.response?.status, error.response?.data || error.message);
     res.status(502).json({ error: paymentError(error, 'Failed to create PayMongo checkout') });
   }
 });
