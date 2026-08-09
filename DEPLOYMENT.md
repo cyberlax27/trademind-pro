@@ -1,46 +1,52 @@
 # TradeMind Pro production setup
 
+TradeMind Pro is a paper-trading beta. It does not connect to brokers or place real-money orders.
+
 ## Render
 
-Deploy this repository as one Docker web service. Set the health check path to `/api/health` and configure these environment variables in Render (never in GitHub):
+Deploy this repository as one web service. Set the health-check path to `/api/health` and configure these environment variables in Render (never in GitHub):
 
 ```text
+NODE_ENV=production
 JWT_SECRET=<long random secret>
-APP_BASE_URL=https://<your-render-hostname>
-DB_PATH=/var/data/trademind.db
+APP_BASE_URL=https://trademind-pro.onrender.com
+DATABASE_URL=<pooled PostgreSQL connection string>
 
 PAYPAL_MODE=live
 PAYPAL_CLIENT_ID=<live client id>
 PAYPAL_SECRET=<live secret>
 PAYPAL_WEBHOOK_ID=<live webhook id>
 
-PAYMONGO_MODE=live
-PAYMONGO_SECRET_KEY=<sk_live key>
-PAYMONGO_WEBHOOK_SECRET=<live webhook signing secret>
+PAYMONGO_ENABLED=false
 ```
 
-The production prices are defined once on the server: Starter $19 or PHP 1,199, Premium $29 or PHP 1,799, and Unlimited $49 or PHP 2,999.
+The server refuses to start without `DATABASE_URL`; this prevents accounts, payments, subscriptions, and trade history from silently being written to Render's temporary filesystem.
 
-Attach a Render persistent disk at `/var/data`. Without it, the SQLite users and payment ledger are erased on a redeploy. A persistent disk also means this service must run as a single instance; migrate to managed PostgreSQL before scaling horizontally.
+## Plans
 
-## Provider webhooks
+Each purchase provides 30 days and does not renew automatically:
 
-Create one live PayPal webhook pointing to:
+- Starter: USD 9, up to 3 paper-trading bots
+- Premium: USD 19, up to 10 paper-trading bots
+- Max: USD 29, up to 25 paper-trading bots
+
+The authoritative amounts are defined server-side in `server.js`. The client sends only a tier name.
+
+## PayPal webhook
+
+The live webhook URL is:
 
 ```text
-https://<your-render-hostname>/api/webhooks/paypal
+https://trademind-pro.onrender.com/api/webhooks/paypal
 ```
 
-Subscribe at minimum to `PAYMENT.CAPTURE.COMPLETED`. Copy that webhook's ID into `PAYPAL_WEBHOOK_ID`.
+Subscribe at minimum to `PAYMENT.CAPTURE.COMPLETED` and store its live webhook ID as `PAYPAL_WEBHOOK_ID`.
 
-Create one live PayMongo webhook pointing to:
+## Release checks
 
-```text
-https://<your-render-hostname>/api/webhooks/paymongo
-```
-
-Subscribe to `checkout_session.payment.paid`. Copy the live signing secret into `PAYMONGO_WEBHOOK_SECRET`.
-
-## Release check
-
-After deployment, open `/api/health`. Both `payments.paypal` and `payments.paymongo` must be `true` before taking a real payment. Then make one low-risk real transaction for each provider, confirm the provider dashboard shows it, and confirm the user's plan changes exactly once.
+1. `/api/health` reports `status: ok`, `database: true`, and `payments.paypal: true`.
+2. Create a temporary account and a bot.
+3. Confirm the bot creates an open simulated position and eventually records a completed simulated trade.
+4. Redeploy and verify the account, bot, subscription, and activity still exist.
+5. Start a PayPal order without approving it and verify the displayed amount matches the selected plan.
+6. For an actual payment, use a controlled low-risk purchase/refund and confirm access is granted exactly once.

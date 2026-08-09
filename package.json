@@ -1,7 +1,7 @@
 {
   "name": "trademind-pro",
   "version": "1.0.0",
-  "description": "Advanced AI-powered forex trading bot platform",
+  "description": "Automated paper-trading platform for education and strategy practice",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -30,7 +30,7 @@
     "helmet": "^8.1.0",
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.5.0",
-    "sqlite3": "^6.0.1"
+    "pg": "^8.23.0"
   },
   "devDependencies": {
     "eslint": "^8.50.0",
