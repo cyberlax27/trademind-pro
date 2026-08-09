@@ -24,7 +24,7 @@ const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID;
 const PAYMONGO_SECRET_KEY = process.env.PAYMONGO_SECRET_KEY;
 const PAYMONGO_WEBHOOK_SECRET = process.env.PAYMONGO_WEBHOOK_SECRET;
 const PAYMONGO_MODE = process.env.PAYMONGO_MODE === 'live' ? 'live' : 'test';
-const PAYMONGO_BASE = 'https://api.paymongo.com/v1';
+const PAYMONGO_BASE = 'https://api.paymongo.com/v2';
 
 const PLANS = Object.freeze({
   starter: { paypal: { amount: '19.00', currency: 'USD' }, paymongo: { amount: 119900, currency: 'PHP' } },
