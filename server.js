@@ -365,6 +365,30 @@ app.get('/api/bots/:id/stats', authenticate, (req, res) => {
   });
 });
 
+app.get('/api/bots/:id/activity', authenticate, async (req, res) => {
+  try {
+    const bot = await dbGet(
+      'SELECT id, name, strategy, bot_type, status, last_signal, created_at FROM bots WHERE id = ? AND user_id = ?',
+      [req.params.id, req.user.id]
+    );
+    if (!bot) return res.status(404).json({ error: 'Bot not found' });
+
+    const openPositions = await dbAll(
+      'SELECT id, symbol, type, lot_size, entry_price, current_price, pnl, opened_at FROM demo_positions WHERE bot_id = ? AND user_id = ? AND status = "open" ORDER BY opened_at DESC',
+      [bot.id, req.user.id]
+    );
+    const closedTrades = await dbAll(
+      'SELECT id, symbol, type, lot_size, entry_price, exit_price, pnl, opened_at, closed_at FROM demo_trades WHERE bot_id = ? AND user_id = ? ORDER BY closed_at DESC LIMIT 100',
+      [bot.id, req.user.id]
+    );
+
+    res.json({ bot, open_positions: openPositions, closed_trades: closedTrades });
+  } catch (error) {
+    console.error('Bot activity error:', error.message);
+    res.status(500).json({ error: 'Could not load bot activity' });
+  }
+});
+
 app.post('/api/bots', authenticate, (req, res) => {
   const { name, strategy, bot_type } = req.body;
   if (!name || typeof name !== 'string' || name.length > 80) return res.status(400).json({ error: 'Valid bot name required' });
@@ -420,6 +444,7 @@ app.post('/api/brokers', authenticate, (req, res) => {
 
 // ============ VERIFIED PAYMENTS ============
 const dbGet = (sql, params = []) => new Promise((resolve, reject) => db.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
+const dbAll = (sql, params = []) => new Promise((resolve, reject) => db.all(sql, params, (err, rows) => err ? reject(err) : resolve(rows || [])));
 const dbRun = (sql, params = []) => new Promise((resolve, reject) => db.run(sql, params, function(err) { err ? reject(err) : resolve(this); }));
 
 function paymentError(error, fallback) {
