@@ -570,7 +570,7 @@ app.post('/api/payments/paymongo/create-checkout', authenticate, async (req, res
       billing: { name: req.user.username },
       cancel_url: `${APP_BASE_URL}/?paymongo_cancel=1`, success_url: `${APP_BASE_URL}/?paymongo_return=1&payment=${pending.lastID}`,
       description: `TradeMind Pro - ${tier} plan`, line_items: [{ amount: plan.amount, currency: plan.currency, name: `${tier[0].toUpperCase() + tier.slice(1)} plan`, quantity: 1 }],
-      payment_method_types: ['card', 'gcash', 'paymaya'], reference_number: `TMP-${pending.lastID}`, send_email_receipt: true, show_line_items: true
+      payment_method_types: ['qrph'], reference_number: `TMP-${pending.lastID}`, send_email_receipt: true, show_line_items: true
     } } }, { auth: { username: PAYMONGO_SECRET_KEY, password: '' }, headers: { 'Content-Type': 'application/json' } });
     const session = checkout.data.data;
     await dbRun('UPDATE payments SET provider_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [session.id, pending.lastID]);
