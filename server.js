@@ -1,6 +1,6 @@
 ﻿require('dotenv').config();
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
+const { db, initDatabase } = require('./database');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const path = require('path');
@@ -24,12 +24,13 @@ const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID;
 const PAYMONGO_SECRET_KEY = process.env.PAYMONGO_SECRET_KEY;
 const PAYMONGO_WEBHOOK_SECRET = process.env.PAYMONGO_WEBHOOK_SECRET;
 const PAYMONGO_MODE = process.env.PAYMONGO_MODE === 'live' ? 'live' : 'test';
+const PAYMONGO_ENABLED = process.env.PAYMONGO_ENABLED === 'true';
 const PAYMONGO_BASE = 'https://api.paymongo.com/v2';
 
 const PLANS = Object.freeze({
-  starter: { paypal: { amount: '19.00', currency: 'USD' }, paymongo: { amount: 119900, currency: 'PHP' } },
-  premium: { paypal: { amount: '29.00', currency: 'USD' }, paymongo: { amount: 179900, currency: 'PHP' } },
-  unlimited: { paypal: { amount: '49.00', currency: 'USD' }, paymongo: { amount: 299900, currency: 'PHP' } }
+  starter: { paypal: { amount: '9.00', currency: 'USD' }, paymongo: { amount: 55000, currency: 'PHP' } },
+  premium: { paypal: { amount: '19.00', currency: 'USD' }, paymongo: { amount: 110000, currency: 'PHP' } },
+  max: { paypal: { amount: '29.00', currency: 'USD' }, paymongo: { amount: 170000, currency: 'PHP' } }
 });
 
 // Loud startup diagnostics: a wrong/missing PAYPAL_MODE on Render is the
@@ -57,120 +58,6 @@ app.get('/app.js', (_req, res) => res.sendFile(path.join(__dirname, 'app.js')));
 app.get('/logo-clean.png', (_req, res) => res.sendFile(path.join(__dirname, 'logo-clean.png')));
 app.get('/logo-community.png', (_req, res) => res.sendFile(path.join(__dirname, 'logo-community.png')));
 
-const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'trademind.db');
-const db = new sqlite3.Database(DB_PATH, (err) => {
-  if (err) console.error('DB Error:', err);
-  else console.log('✓ Database connected');
-});
-
-db.serialize(() => {
-  db.run(`CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    email TEXT UNIQUE NOT NULL,
-    password TEXT NOT NULL,
-    tier TEXT DEFAULT 'free',
-    tier_expires_at TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )`);
-  db.all('PRAGMA table_info(users)', (err, columns) => {
-    if (err) return console.error('User migration error:', err);
-    if (!columns.some(column => column.name === 'tier_expires_at')) db.run('ALTER TABLE users ADD COLUMN tier_expires_at TIMESTAMP');
-  });
-
-  db.run(`CREATE TABLE IF NOT EXISTS demo_accounts (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER UNIQUE NOT NULL,
-    balance REAL DEFAULT 10000,
-    equity REAL DEFAULT 10000,
-    used_margin REAL DEFAULT 0,
-    free_margin REAL DEFAULT 10000,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS demo_positions (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    bot_id INTEGER,
-    symbol TEXT NOT NULL,
-    type TEXT NOT NULL,
-    lot_size REAL NOT NULL,
-    entry_price REAL NOT NULL,
-    current_price REAL NOT NULL,
-    pnl REAL DEFAULT 0,
-    status TEXT DEFAULT 'open',
-    opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS demo_trades (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    bot_id INTEGER,
-    symbol TEXT NOT NULL,
-    type TEXT NOT NULL,
-    lot_size REAL NOT NULL,
-    entry_price REAL NOT NULL,
-    exit_price REAL NOT NULL,
-    pnl REAL DEFAULT 0,
-    status TEXT DEFAULT 'closed',
-    opened_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    closed_at TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS bots (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    strategy TEXT NOT NULL,
-    bot_type TEXT DEFAULT 'demo',
-    status TEXT DEFAULT 'active',
-    bot_profit REAL DEFAULT 0,
-    trade_count INTEGER DEFAULT 0,
-    take_profit REAL DEFAULT 2,
-    stop_loss REAL DEFAULT 1,
-    last_signal TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS brokers (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    name TEXT NOT NULL,
-    api_key TEXT,
-    account_type TEXT,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  )`);
-
-  db.run(`CREATE TABLE IF NOT EXISTS payments (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id INTEGER NOT NULL,
-    amount REAL NOT NULL,
-    currency TEXT DEFAULT 'USD',
-    method TEXT,
-    status TEXT DEFAULT 'pending',
-    tier TEXT,
-    provider_id TEXT,
-    provider_event_id TEXT,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(user_id) REFERENCES users(id)
-  )`);
-  db.all('PRAGMA table_info(payments)', (err, columns) => {
-    if (err) return console.error('Payment migration error:', err);
-    const names = new Set(columns.map(column => column.name));
-    if (!names.has('provider_id')) db.run('ALTER TABLE payments ADD COLUMN provider_id TEXT');
-    if (!names.has('provider_event_id')) db.run('ALTER TABLE payments ADD COLUMN provider_event_id TEXT');
-    if (!names.has('updated_at')) db.run('ALTER TABLE payments ADD COLUMN updated_at TIMESTAMP');
-    db.run('CREATE UNIQUE INDEX IF NOT EXISTS payments_provider_id_unique ON payments(method, provider_id) WHERE provider_id IS NOT NULL');
-    db.run('CREATE UNIQUE INDEX IF NOT EXISTS payments_event_id_unique ON payments(provider_event_id) WHERE provider_event_id IS NOT NULL');
-  });
-});
-
 const MOCK_PRICES = {
   EURUSD: 1.0850, GBPUSD: 1.2750, USDJPY: 149.50, AUDUSD: 0.6750, NZDUSD: 0.6250, USDCAD: 1.3650,
   BTCUSD: 65000, ETHUSD: 3500, XRPUSD: 2.50, ADAUSD: 0.98, DOGEUSD: 0.45,
@@ -178,10 +65,10 @@ const MOCK_PRICES = {
 };
 
 const TIER_LIMITS = Object.freeze({
-  free: { bots: 1, brokers: 0 },
-  starter: { bots: 3, brokers: 2 },
-  premium: { bots: 10, brokers: Infinity },
-  unlimited: { bots: Infinity, brokers: Infinity }
+  free: { bots: 1 },
+  starter: { bots: 3 },
+  premium: { bots: 10 },
+  max: { bots: 25 }
 });
 
 let PRICES = JSON.parse(JSON.stringify(MOCK_PRICES));
@@ -206,24 +93,31 @@ function authenticate(req, res, next) {
 
 app.get('/', (req, res) => res.sendFile(__dirname + '/index.html'));
 
-app.post('/api/auth/signup', (req, res) => {
+app.post('/api/auth/signup', async (req, res) => {
   const { username, email, password } = req.body;
-  if (!username || !email || !password) return res.json({ error: 'All fields required' });
-
-  const hash = bcrypt.hashSync(password, 10);
-  db.run('INSERT INTO users (username, email, password) VALUES (?, ?, ?)', [username, email, hash], function(err) {
-    if (err) return res.json({ error: 'User already exists' });
-    db.run('INSERT INTO demo_accounts (user_id) VALUES (?)', [this.lastID]);
-    const token = jwt.sign({ id: this.lastID, username, tier: 'free' }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ token, user: { id: this.lastID, username, email, tier: 'free' } });
-  });
+  if (!/^[A-Za-z0-9_-]{3,30}$/.test(username || '')) return res.status(400).json({ error: 'Username must be 3–30 letters, numbers, underscores, or hyphens' });
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || '') || email.length > 254) return res.status(400).json({ error: 'Valid email required' });
+  if (typeof password !== 'string' || password.length < 10 || password.length > 128) return res.status(400).json({ error: 'Password must be 10–128 characters' });
+  try {
+    const hash = await bcrypt.hash(password, 10);
+    const userId = await db.transaction(async tx => {
+      const created = await tx.run('INSERT INTO users (username, email, password) VALUES (?, ?, ?)', [username, email.toLowerCase(), hash]);
+      await tx.run('INSERT INTO demo_accounts (user_id) VALUES (?)', [created.lastID]);
+      return created.lastID;
+    });
+    const token = jwt.sign({ id: userId, username, tier: 'free' }, JWT_SECRET, { expiresIn: '7d' });
+    res.status(201).json({ token, user: { id: userId, username, email: email.toLowerCase(), tier: 'free' } });
+  } catch (error) {
+    const duplicate = error.code === '23505';
+    res.status(duplicate ? 409 : 500).json({ error: duplicate ? 'Username or email already exists' : 'Could not create account' });
+  }
 });
 
 app.post('/api/auth/login', (req, res) => {
   const { username, password } = req.body;
   if (!username || !password) return res.json({ error: 'Username and password required' });
 
-  db.get('SELECT * FROM users WHERE username = ?', [username], (err, user) => {
+  db.get('SELECT * FROM users WHERE LOWER(username) = LOWER(?)', [username], (err, user) => {
     if (!user) return res.json({ error: 'User not found' });
     if (!bcrypt.compareSync(password, user.password)) return res.json({ error: 'Invalid password' });
     const token = jwt.sign({ id: user.id, username: user.username, tier: user.tier }, JWT_SECRET, { expiresIn: '7d' });
@@ -234,7 +128,7 @@ app.post('/api/auth/login', (req, res) => {
 app.get('/api/user/profile', authenticate, (req, res) => {
   db.get('SELECT * FROM users WHERE id = ?', [req.user.id], (err, user) => {
     if (err || !user) return res.status(404).json({ error: 'User not found' });
-    const expired = user.tier_expires_at && new Date(`${user.tier_expires_at}Z`) <= new Date();
+    const expired = user.tier_expires_at && new Date(user.tier_expires_at) <= new Date();
     res.json({ id: user.id, username: user.username, email: user.email, tier: expired ? 'free' : user.tier, tier_expires_at: expired ? null : user.tier_expires_at });
   });
 });
@@ -273,9 +167,6 @@ app.get('/api/assets', (req, res) => {
 
 app.get('/api/brokers-list', (req, res) => {
   res.json({
-    xm: { name: 'XM', guide: '1. Create XM account\n2. Enable API\n3. Copy API Key\n4. Paste here', docs: 'https://xm.com/docs' },
-    exness: { name: 'Exness', guide: '1. Create Exness account\n2. Go to Settings > API\n3. Generate key\n4. Paste here', docs: 'https://exness.com/docs' },
-    doto: { name: 'Doto', guide: '1. Create Doto account\n2. Dashboard > Integrations\n3. Copy API Key\n4. Paste here', docs: 'https://doto.com/docs' },
     demo: { name: 'Demo Account', guide: 'No API key needed. Use our 10000 virtual account to practice trading.', docs: '#' }
   });
 });
@@ -311,7 +202,7 @@ app.get('/api/demo/account', authenticate, (req, res) => {
 });
 
 app.get('/api/demo/positions', authenticate, (req, res) => {
-  db.all('SELECT * FROM demo_positions WHERE user_id = ? AND status = "open"', [req.user.id], (err, positions) => {
+  db.all("SELECT * FROM demo_positions WHERE user_id = ? AND status = 'open'", [req.user.id], (err, positions) => {
     res.json(positions || []);
   });
 });
@@ -328,8 +219,12 @@ app.get('/api/demo/closed', authenticate, (req, res) => {
 
 app.post('/api/demo/trade', authenticate, (req, res) => {
   const { symbol, type, lot_size } = req.body;
-  const price = PRICES[symbol] || MOCK_PRICES[symbol] || 1;
-  db.run('INSERT INTO demo_positions (user_id, symbol, type, lot_size, entry_price, current_price, status) VALUES (?, ?, ?, ?, ?, ?, "open")',
+  const size = Number(lot_size);
+  if (!Object.hasOwn(MOCK_PRICES, symbol) || !['BUY', 'SELL'].includes(type) || !Number.isFinite(size) || size < 0.01 || size > 100) {
+    return res.status(400).json({ error: 'Valid symbol, side, and lot size (0.01–100) required' });
+  }
+  const price = PRICES[symbol];
+  db.run("INSERT INTO demo_positions (user_id, symbol, type, lot_size, entry_price, current_price, status) VALUES (?, ?, ?, ?, ?, ?, 'open')",
     [req.user.id, symbol, type, lot_size, price, price],
     function() {
       res.json({ success: true, entry_price: price, position_id: this.lastID });
@@ -337,17 +232,23 @@ app.post('/api/demo/trade', authenticate, (req, res) => {
   );
 });
 
-app.post('/api/demo/close-position/:id', authenticate, (req, res) => {
-  db.get('SELECT * FROM demo_positions WHERE id = ? AND user_id = ?', [req.params.id, req.user.id], (err, pos) => {
-    if (!pos) return res.json({ error: 'Position not found' });
+app.post('/api/demo/close-position/:id', authenticate, async (req, res) => {
+  try {
+    const result = await db.transaction(async tx => {
+      const pos = await tx.get('SELECT * FROM demo_positions WHERE id = ? AND user_id = ? FOR UPDATE', [req.params.id, req.user.id]);
+      if (!pos) return null;
     const exitPrice = PRICES[pos.symbol] || MOCK_PRICES[pos.symbol] || pos.current_price;
     const pnl = (exitPrice - pos.entry_price) * pos.lot_size * (pos.type === 'BUY' ? 1 : -1);
-    db.run('INSERT INTO demo_trades (user_id, symbol, type, lot_size, entry_price, exit_price, pnl, status) VALUES (?, ?, ?, ?, ?, ?, ?, "closed")',
-      [pos.user_id, pos.symbol, pos.type, pos.lot_size, pos.entry_price, exitPrice, pnl]
-    );
-    db.run('DELETE FROM demo_positions WHERE id = ?', [req.params.id]);
-    res.json({ success: true, exit_price: exitPrice, pnl });
-  });
+      await tx.run("INSERT INTO demo_trades (user_id, bot_id, symbol, type, lot_size, entry_price, exit_price, pnl, status, opened_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'closed', ?)",
+        [pos.user_id, pos.bot_id, pos.symbol, pos.type, pos.lot_size, pos.entry_price, exitPrice, pnl, pos.opened_at]);
+      await tx.run('DELETE FROM demo_positions WHERE id = ?', [pos.id]);
+      return { success: true, exit_price: exitPrice, pnl };
+    });
+    if (!result) return res.status(404).json({ error: 'Position not found' });
+    res.json(result);
+  } catch (error) {
+    res.status(500).json({ error: 'Could not close position' });
+  }
 });
 
 app.get('/api/bots', authenticate, (req, res) => {
@@ -359,7 +260,7 @@ app.get('/api/bots', authenticate, (req, res) => {
 app.get('/api/bots/:id/stats', authenticate, (req, res) => {
   db.get('SELECT bot_profit, trade_count FROM bots WHERE id = ? AND user_id = ?', [req.params.id, req.user.id], (err, bot) => {
     if (!bot) return res.json({ bot_profit: 0, trade_count: 0, current_pnl: 0 });
-    db.get('SELECT COALESCE(SUM(pnl), 0) as current_pnl FROM demo_positions WHERE bot_id = ? AND status = "open"', [req.params.id], (err, pnl) => {
+    db.get("SELECT COALESCE(SUM(pnl), 0) as current_pnl FROM demo_positions WHERE bot_id = ? AND status = 'open'", [req.params.id], (err, pnl) => {
       res.json({ bot_profit: bot.bot_profit, trade_count: bot.trade_count, current_pnl: pnl?.current_pnl || 0 });
     });
   });
@@ -374,7 +275,7 @@ app.get('/api/bots/:id/activity', authenticate, async (req, res) => {
     if (!bot) return res.status(404).json({ error: 'Bot not found' });
 
     const openPositions = await dbAll(
-      'SELECT id, symbol, type, lot_size, entry_price, current_price, pnl, opened_at FROM demo_positions WHERE bot_id = ? AND user_id = ? AND status = "open" ORDER BY opened_at DESC',
+      "SELECT id, symbol, type, lot_size, entry_price, current_price, pnl, opened_at FROM demo_positions WHERE bot_id = ? AND user_id = ? AND status = 'open' ORDER BY opened_at DESC",
       [bot.id, req.user.id]
     );
     const closedTrades = await dbAll(
@@ -390,23 +291,25 @@ app.get('/api/bots/:id/activity', authenticate, async (req, res) => {
 });
 
 app.post('/api/bots', authenticate, (req, res) => {
-  const { name, strategy, bot_type } = req.body;
+  const { name, strategy } = req.body;
   if (!name || typeof name !== 'string' || name.length > 80) return res.status(400).json({ error: 'Valid bot name required' });
+  if (!['moving_average', 'rsi', 'macd', 'bollinger', 'fibonacci'].includes(strategy)) return res.status(400).json({ error: 'Valid strategy required' });
   db.get("SELECT CASE WHEN tier_expires_at IS NOT NULL AND tier_expires_at <= CURRENT_TIMESTAMP THEN 'free' ELSE tier END AS tier FROM users WHERE id = ?", [req.user.id], (userErr, user) => {
     if (userErr || !user) return res.status(404).json({ error: 'User not found' });
     db.get('SELECT COUNT(*) AS count FROM bots WHERE user_id = ?', [req.user.id], (countErr, row) => {
       if (countErr) return res.status(500).json({ error: 'Could not verify plan limit' });
       const limit = (TIER_LIMITS[user.tier] || TIER_LIMITS.free).bots;
       if (row.count >= limit) return res.status(403).json({ error: `Your ${user.tier} plan allows ${limit} trading bot${limit === 1 ? '' : 's'}` });
-      db.run('INSERT INTO bots (user_id, name, strategy, bot_type) VALUES (?, ?, ?, ?)', [req.user.id, name.trim(), strategy, bot_type], function(err) {
+      db.run("INSERT INTO bots (user_id, name, strategy, bot_type) VALUES (?, ?, ?, 'demo')", [req.user.id, name.trim(), strategy], function(err) {
         if (err) return res.status(500).json({ error: 'Could not create bot' });
-        res.json({ id: this.lastID, name: name.trim(), strategy, bot_type, status: 'active' });
+        res.json({ id: this.lastID, name: name.trim(), strategy, bot_type: 'demo', status: 'active' });
       });
     });
   });
 });
 
 app.put('/api/bots/:id/status', authenticate, (req, res) => {
+  if (!['active', 'inactive'].includes(req.body.status)) return res.status(400).json({ error: 'Invalid bot status' });
   db.run('UPDATE bots SET status = ? WHERE id = ? AND user_id = ?', [req.body.status, req.params.id, req.user.id], () => {
     res.json({ success: true });
   });
@@ -419,27 +322,22 @@ app.delete('/api/bots/:id', authenticate, (req, res) => {
 });
 
 app.get('/api/brokers', authenticate, (req, res) => {
-  db.all('SELECT id, name, account_type, created_at FROM brokers WHERE user_id = ?', [req.user.id], (err, brokers) => {
-    res.json(brokers || []);
-  });
+  res.json([]);
 });
 
 app.post('/api/brokers', authenticate, (req, res) => {
-  const { name, api_key, account_type } = req.body;
-  if (!name) return res.status(400).json({ error: 'Broker name required' });
-  db.get("SELECT CASE WHEN tier_expires_at IS NOT NULL AND tier_expires_at <= CURRENT_TIMESTAMP THEN 'free' ELSE tier END AS tier FROM users WHERE id = ?", [req.user.id], (userErr, user) => {
-    if (userErr || !user) return res.status(404).json({ error: 'User not found' });
-    db.get("SELECT COUNT(*) AS count FROM brokers WHERE user_id = ? AND name != 'Demo Account'", [req.user.id], (countErr, row) => {
-      if (countErr) return res.status(500).json({ error: 'Could not verify plan limit' });
-      const isDemo = name === 'Demo Account';
-      const limit = (TIER_LIMITS[user.tier] || TIER_LIMITS.free).brokers;
-      if (!isDemo && row.count >= limit) return res.status(403).json({ error: `Your ${user.tier} plan does not allow another broker connection` });
-      db.run('INSERT INTO brokers (user_id, name, api_key, account_type) VALUES (?, ?, ?, ?)', [req.user.id, name, api_key || null, account_type], function(err) {
-        if (err) return res.status(500).json({ error: 'Could not connect broker' });
-        res.json({ id: this.lastID, name, account_type });
-      });
-    });
-  });
+  res.status(410).json({ error: 'Broker connections are unavailable while TradeMind Pro is in paper-trading beta.' });
+});
+
+app.post('/api/support', authenticate, async (req, res) => {
+  const message = typeof req.body.message === 'string' ? req.body.message.trim() : '';
+  if (message.length < 10 || message.length > 2000) return res.status(400).json({ error: 'Message must be 10–2,000 characters' });
+  try {
+    const request = await dbRun('INSERT INTO support_requests (user_id, message) VALUES (?, ?)', [req.user.id, message]);
+    res.status(201).json({ success: true, request_id: request.lastID });
+  } catch (error) {
+    res.status(500).json({ error: 'Could not save support request' });
+  }
 });
 
 // ============ VERIFIED PAYMENTS ============
@@ -455,19 +353,14 @@ function paymentError(error, fallback) {
 
 async function fulfillPayment(payment, providerEventId = null) {
   if (payment.status === 'completed') return payment;
-  await dbRun('BEGIN IMMEDIATE');
-  try {
-    const current = await dbGet('SELECT * FROM payments WHERE id = ?', [payment.id]);
+  return db.transaction(async tx => {
+    const current = await tx.get('SELECT * FROM payments WHERE id = ? FOR UPDATE', [payment.id]);
     if (current.status !== 'completed') {
-      await dbRun("UPDATE payments SET status = 'completed', provider_event_id = COALESCE(provider_event_id, ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?", [providerEventId, payment.id]);
-      await dbRun("UPDATE users SET tier = ?, tier_expires_at = datetime(CASE WHEN tier_expires_at > CURRENT_TIMESTAMP THEN tier_expires_at ELSE CURRENT_TIMESTAMP END, '+30 days') WHERE id = ?", [current.tier, current.user_id]);
+      await tx.run("UPDATE payments SET status = 'completed', provider_event_id = COALESCE(provider_event_id, ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?", [providerEventId, payment.id]);
+      await tx.run("UPDATE users SET tier = ?, tier_expires_at = GREATEST(COALESCE(tier_expires_at, CURRENT_TIMESTAMP), CURRENT_TIMESTAMP) + INTERVAL '30 days' WHERE id = ?", [current.tier, current.user_id]);
     }
-    await dbRun('COMMIT');
     return { ...current, status: 'completed' };
-  } catch (error) {
-    await dbRun('ROLLBACK').catch(() => {});
-    throw error;
-  }
+  });
 }
 
 function paypalCapture(order) {
@@ -585,6 +478,7 @@ function verifyPayMongoSignature(req) {
 }
 
 app.post('/api/payments/paymongo/create-checkout', authenticate, async (req, res) => {
+  if (!PAYMONGO_ENABLED) return res.status(404).json({ error: 'PayMongo checkout is temporarily unavailable' });
   const { tier } = req.body;
   const plan = PLANS[tier]?.paymongo;
   if (!plan || !Number.isInteger(plan.amount) || plan.amount < 10000) return res.status(503).json({ error: 'PayMongo pricing is not configured' });
@@ -607,6 +501,7 @@ app.post('/api/payments/paymongo/create-checkout', authenticate, async (req, res
 });
 
 app.post('/api/webhooks/paymongo', async (req, res) => {
+  if (!PAYMONGO_ENABLED) return res.sendStatus(404);
   if (!verifyPayMongoSignature(req)) return res.sendStatus(400);
   try {
     const event = req.body.data;
@@ -635,13 +530,22 @@ app.get('/api/payments/:id/status', authenticate, async (req, res) => {
   res.json(payment);
 });
 
-app.get('/api/health', (_req, res) => res.json({
-  status: 'ok',
-  payments: {
-    paypal: Boolean(PAYPAL_CLIENT_ID && PAYPAL_SECRET && PAYPAL_WEBHOOK_ID),
-    paymongo: Boolean(PAYMONGO_SECRET_KEY && PAYMONGO_WEBHOOK_SECRET)
+app.get('/api/health', async (_req, res) => {
+  try {
+    await dbGet('SELECT 1 AS healthy');
+    res.json({
+      status: 'ok',
+      database: true,
+      product_mode: 'paper-trading',
+      payments: {
+        paypal: Boolean(PAYPAL_CLIENT_ID && PAYPAL_SECRET && PAYPAL_WEBHOOK_ID),
+        paymongo: PAYMONGO_ENABLED && Boolean(PAYMONGO_SECRET_KEY && PAYMONGO_WEBHOOK_SECRET)
+      }
+    });
+  } catch (error) {
+    res.status(503).json({ status: 'error', database: false });
   }
-}));
+});
 
 // ============ BOT AUTOMATION (demo bots only) ============
 const botLastPrice = {};
@@ -666,60 +570,76 @@ function generateSignal(strategy, prevPrice, currentPrice) {
   }
 }
 
-function runBotAutomation() {
-  db.all('SELECT * FROM bots WHERE status = "active" AND bot_type = "demo"', [], (err, bots) => {
-    if (err || !bots) return;
+let automationRunning = false;
 
-    bots.forEach((bot) => {
+async function runBotAutomation() {
+  if (automationRunning) return;
+  automationRunning = true;
+  try {
+    const bots = await db.all("SELECT * FROM bots WHERE status = 'active' AND bot_type = 'demo'");
+    await Promise.all(bots.map(async bot => {
       const symbols = Object.keys(PRICES);
       const symbol = symbols[bot.id % symbols.length];
       const currentPrice = PRICES[symbol];
       const prevPrice = botLastPrice[bot.id];
       botLastPrice[bot.id] = currentPrice;
 
-      db.get('SELECT * FROM demo_positions WHERE bot_id = ? AND status = "open"', [bot.id], (err, openPos) => {
+      await db.transaction(async tx => {
+        const currentBot = await tx.get("SELECT * FROM bots WHERE id = ? AND status = 'active' FOR UPDATE", [bot.id]);
+        if (!currentBot) return;
+        const openPos = await tx.get("SELECT * FROM demo_positions WHERE bot_id = ? AND status = 'open' FOR UPDATE", [bot.id]);
         if (openPos) {
           const pnl = (currentPrice - openPos.entry_price) * openPos.lot_size * (openPos.type === 'BUY' ? 1 : -1);
           const pnlPct = ((currentPrice - openPos.entry_price) / openPos.entry_price) * (openPos.type === 'BUY' ? 1 : -1) * 100;
 
-          if (pnlPct >= bot.take_profit || pnlPct <= -bot.stop_loss) {
-            db.run(
-              'INSERT INTO demo_trades (user_id, bot_id, symbol, type, lot_size, entry_price, exit_price, pnl, status, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, "closed", CURRENT_TIMESTAMP)',
-              [openPos.user_id, bot.id, openPos.symbol, openPos.type, openPos.lot_size, openPos.entry_price, currentPrice, pnl]
+          if (pnlPct >= currentBot.take_profit || pnlPct <= -currentBot.stop_loss) {
+            await tx.run(
+              "INSERT INTO demo_trades (user_id, bot_id, symbol, type, lot_size, entry_price, exit_price, pnl, status, opened_at, closed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'closed', ?, CURRENT_TIMESTAMP)",
+              [openPos.user_id, bot.id, openPos.symbol, openPos.type, openPos.lot_size, openPos.entry_price, currentPrice, pnl, openPos.opened_at]
             );
-            db.run('DELETE FROM demo_positions WHERE id = ?', [openPos.id]);
-            db.run(
+            await tx.run('DELETE FROM demo_positions WHERE id = ?', [openPos.id]);
+            await tx.run(
               'UPDATE bots SET bot_profit = bot_profit + ?, trade_count = trade_count + 1, last_signal = ? WHERE id = ?',
               [pnl, `CLOSED ${openPos.type} @ ${currentPrice.toFixed(4)}`, bot.id]
             );
           } else {
-            db.run('UPDATE demo_positions SET current_price = ?, pnl = ? WHERE id = ?', [currentPrice, pnl, openPos.id]);
+            await tx.run('UPDATE demo_positions SET current_price = ?, pnl = ? WHERE id = ?', [currentPrice, pnl, openPos.id]);
           }
           return;
         }
 
-        const signal = generateSignal(bot.strategy, prevPrice, currentPrice);
+        const signal = generateSignal(currentBot.strategy, prevPrice, currentPrice);
         if (!signal) return;
 
-        db.run(
-          'INSERT INTO demo_positions (user_id, bot_id, symbol, type, lot_size, entry_price, current_price, status) VALUES (?, ?, ?, ?, ?, ?, ?, "open")',
-          [bot.user_id, bot.id, symbol, signal, 0.1, currentPrice, currentPrice],
-          function() {
-            db.run('UPDATE bots SET last_signal = ? WHERE id = ?', [`OPENED ${signal} @ ${currentPrice.toFixed(4)}`, bot.id]);
-          }
+        await tx.run(
+          "INSERT INTO demo_positions (user_id, bot_id, symbol, type, lot_size, entry_price, current_price, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'open')",
+          [bot.user_id, bot.id, symbol, signal, 0.1, currentPrice, currentPrice]
         );
+        await tx.run('UPDATE bots SET last_signal = ? WHERE id = ?', [`OPENED ${signal} @ ${currentPrice.toFixed(4)}`, bot.id]);
       });
-    });
-  });
+    }));
+  } catch (error) {
+    console.error('Bot automation cycle failed:', error.message);
+  } finally {
+    automationRunning = false;
+  }
 }
 
-cron.schedule('*/1 * * * *', () => {
+cron.schedule('*/1 * * * *', async () => {
   console.log('⚙️  Running bot automation cycle...');
-  runBotAutomation();
+  await runBotAutomation();
 });
 
 cron.schedule('17 * * * *', () => {
   db.run("UPDATE users SET tier = 'free', tier_expires_at = NULL WHERE tier_expires_at IS NOT NULL AND tier_expires_at <= CURRENT_TIMESTAMP");
 });
 
-app.listen(PORT, () => console.log(`✓ Server running on port ${PORT}`));
+async function start() {
+  await initDatabase();
+  app.listen(PORT, () => console.log(`✓ Server running on port ${PORT}`));
+}
+
+start().catch(error => {
+  console.error('Fatal startup error:', error.message);
+  process.exit(1);
+});

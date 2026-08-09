@@ -10,12 +10,7 @@ services:
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
       PORT: 5000
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5000}
-      DB_PATH: /var/data/trademind.db
-    volumes:
-      - trademind-data:/var/data
+      DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
     container_name: trademind-api
     command: npm start
     restart: unless-stopped
-
-volumes:
-  trademind-data:

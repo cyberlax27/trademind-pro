@@ -5,7 +5,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm ci --omit=dev
 
-COPY server.js app.js index.html ./
+COPY server.js database.js app.js index.html ./
 COPY public ./public
 COPY logo-clean.png logo-community.png ./
 
