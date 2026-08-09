@@ -6,18 +6,31 @@ const bcrypt = require('bcryptjs');
 const path = require('path');
 const axios = require('axios');
 const cron = require('node-cron');
+const crypto = require('crypto');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-2024';
-if (!process.env.JWT_SECRET) {
-  console.warn('⚠️  JWT_SECRET env var is not set — falling back to a weak, publicly-known default. Set a long random JWT_SECRET in Render\'s environment variables.');
-}
+const JWT_SECRET = process.env.JWT_SECRET;
+if (!JWT_SECRET) throw new Error('JWT_SECRET is required. Set it in Render; never commit it.');
+const APP_BASE_URL = (process.env.APP_BASE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
 
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID;
 const PAYPAL_SECRET = process.env.PAYPAL_SECRET;
 const PAYPAL_MODE = process.env.PAYPAL_MODE === 'live' ? 'live' : 'sandbox';
 const PAYPAL_BASE = PAYPAL_MODE === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+const PAYPAL_WEBHOOK_ID = process.env.PAYPAL_WEBHOOK_ID;
+const PAYMONGO_SECRET_KEY = process.env.PAYMONGO_SECRET_KEY;
+const PAYMONGO_WEBHOOK_SECRET = process.env.PAYMONGO_WEBHOOK_SECRET;
+const PAYMONGO_MODE = process.env.PAYMONGO_MODE === 'live' ? 'live' : 'test';
+const PAYMONGO_BASE = 'https://api.paymongo.com/v1';
+
+const PLANS = Object.freeze({
+  starter: { paypal: { amount: '19.00', currency: 'USD' }, paymongo: { amount: 119900, currency: 'PHP' } },
+  premium: { paypal: { amount: '29.00', currency: 'USD' }, paymongo: { amount: 179900, currency: 'PHP' } },
+  unlimited: { paypal: { amount: '49.00', currency: 'USD' }, paymongo: { amount: 299900, currency: 'PHP' } }
+});
 
 // Loud startup diagnostics: a wrong/missing PAYPAL_MODE on Render is the
 // single most common cause of "PayPal payments always fail" — it fails
@@ -31,10 +44,21 @@ if (!PAYPAL_CLIENT_ID || !PAYPAL_SECRET) {
 }
 
 app.set('trust proxy', 1);
-app.use(express.json());
-app.use(express.static(__dirname));
+app.use(helmet({ contentSecurityPolicy: false }));
+app.use(express.json({
+  limit: '100kb',
+  verify: (req, _res, buffer) => { req.rawBody = buffer; }
+}));
+const authLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: true, legacyHeaders: false });
+const paymentLimiter = rateLimit({ windowMs: 60 * 1000, limit: 10, standardHeaders: true, legacyHeaders: false });
+app.use('/api/auth', authLimiter);
+app.use('/api/payments', paymentLimiter);
+app.get('/app.js', (_req, res) => res.sendFile(path.join(__dirname, 'app.js')));
+app.get('/logo-clean.png', (_req, res) => res.sendFile(path.join(__dirname, 'logo-clean.png')));
+app.get('/logo-community.png', (_req, res) => res.sendFile(path.join(__dirname, 'logo-community.png')));
 
-const db = new sqlite3.Database('trademind.db', (err) => {
+const DB_PATH = process.env.DB_PATH || path.join(__dirname, 'trademind.db');
+const db = new sqlite3.Database(DB_PATH, (err) => {
   if (err) console.error('DB Error:', err);
   else console.log('✓ Database connected');
 });
@@ -46,8 +70,13 @@ db.serialize(() => {
     email TEXT UNIQUE NOT NULL,
     password TEXT NOT NULL,
     tier TEXT DEFAULT 'free',
+    tier_expires_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`);
+  db.all('PRAGMA table_info(users)', (err, columns) => {
+    if (err) return console.error('User migration error:', err);
+    if (!columns.some(column => column.name === 'tier_expires_at')) db.run('ALTER TABLE users ADD COLUMN tier_expires_at TIMESTAMP');
+  });
 
   db.run(`CREATE TABLE IF NOT EXISTS demo_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,9 +154,21 @@ db.serialize(() => {
     method TEXT,
     status TEXT DEFAULT 'pending',
     tier TEXT,
+    provider_id TEXT,
+    provider_event_id TEXT,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(user_id) REFERENCES users(id)
   )`);
+  db.all('PRAGMA table_info(payments)', (err, columns) => {
+    if (err) return console.error('Payment migration error:', err);
+    const names = new Set(columns.map(column => column.name));
+    if (!names.has('provider_id')) db.run('ALTER TABLE payments ADD COLUMN provider_id TEXT');
+    if (!names.has('provider_event_id')) db.run('ALTER TABLE payments ADD COLUMN provider_event_id TEXT');
+    if (!names.has('updated_at')) db.run('ALTER TABLE payments ADD COLUMN updated_at TIMESTAMP');
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS payments_provider_id_unique ON payments(method, provider_id) WHERE provider_id IS NOT NULL');
+    db.run('CREATE UNIQUE INDEX IF NOT EXISTS payments_event_id_unique ON payments(provider_event_id) WHERE provider_event_id IS NOT NULL');
+  });
 });
 
 const MOCK_PRICES = {
@@ -135,6 +176,13 @@ const MOCK_PRICES = {
   BTCUSD: 65000, ETHUSD: 3500, XRPUSD: 2.50, ADAUSD: 0.98, DOGEUSD: 0.45,
   XAUUSD: 2550, XAGUUSD: 31.50, WTIUSD: 78.50, NGAS: 3.25, CORN: 410.50
 };
+
+const TIER_LIMITS = Object.freeze({
+  free: { bots: 1, brokers: 0 },
+  starter: { bots: 3, brokers: 2 },
+  premium: { bots: 10, brokers: Infinity },
+  unlimited: { bots: Infinity, brokers: Infinity }
+});
 
 let PRICES = JSON.parse(JSON.stringify(MOCK_PRICES));
 
@@ -185,7 +233,9 @@ app.post('/api/auth/login', (req, res) => {
 
 app.get('/api/user/profile', authenticate, (req, res) => {
   db.get('SELECT * FROM users WHERE id = ?', [req.user.id], (err, user) => {
-    res.json({ id: user.id, username: user.username, email: user.email, tier: user.tier });
+    if (err || !user) return res.status(404).json({ error: 'User not found' });
+    const expired = user.tier_expires_at && new Date(`${user.tier_expires_at}Z`) <= new Date();
+    res.json({ id: user.id, username: user.username, email: user.email, tier: expired ? 'free' : user.tier, tier_expires_at: expired ? null : user.tier_expires_at });
   });
 });
 
@@ -317,12 +367,19 @@ app.get('/api/bots/:id/stats', authenticate, (req, res) => {
 
 app.post('/api/bots', authenticate, (req, res) => {
   const { name, strategy, bot_type } = req.body;
-  db.run('INSERT INTO bots (user_id, name, strategy, bot_type) VALUES (?, ?, ?, ?)',
-    [req.user.id, name, strategy, bot_type],
-    function() {
-      res.json({ id: this.lastID, name, strategy, bot_type, status: 'active' });
-    }
-  );
+  if (!name || typeof name !== 'string' || name.length > 80) return res.status(400).json({ error: 'Valid bot name required' });
+  db.get("SELECT CASE WHEN tier_expires_at IS NOT NULL AND tier_expires_at <= CURRENT_TIMESTAMP THEN 'free' ELSE tier END AS tier FROM users WHERE id = ?", [req.user.id], (userErr, user) => {
+    if (userErr || !user) return res.status(404).json({ error: 'User not found' });
+    db.get('SELECT COUNT(*) AS count FROM bots WHERE user_id = ?', [req.user.id], (countErr, row) => {
+      if (countErr) return res.status(500).json({ error: 'Could not verify plan limit' });
+      const limit = (TIER_LIMITS[user.tier] || TIER_LIMITS.free).bots;
+      if (row.count >= limit) return res.status(403).json({ error: `Your ${user.tier} plan allows ${limit} trading bot${limit === 1 ? '' : 's'}` });
+      db.run('INSERT INTO bots (user_id, name, strategy, bot_type) VALUES (?, ?, ?, ?)', [req.user.id, name.trim(), strategy, bot_type], function(err) {
+        if (err) return res.status(500).json({ error: 'Could not create bot' });
+        res.json({ id: this.lastID, name: name.trim(), strategy, bot_type, status: 'active' });
+      });
+    });
+  });
 });
 
 app.put('/api/bots/:id/status', authenticate, (req, res) => {
@@ -338,22 +395,60 @@ app.delete('/api/bots/:id', authenticate, (req, res) => {
 });
 
 app.get('/api/brokers', authenticate, (req, res) => {
-  db.all('SELECT * FROM brokers WHERE user_id = ?', [req.user.id], (err, brokers) => {
+  db.all('SELECT id, name, account_type, created_at FROM brokers WHERE user_id = ?', [req.user.id], (err, brokers) => {
     res.json(brokers || []);
   });
 });
 
 app.post('/api/brokers', authenticate, (req, res) => {
   const { name, api_key, account_type } = req.body;
-  db.run('INSERT INTO brokers (user_id, name, api_key, account_type) VALUES (?, ?, ?, ?)',
-    [req.user.id, name, api_key, account_type],
-    function() {
-      res.json({ id: this.lastID, name, api_key, account_type });
-    }
-  );
+  if (!name) return res.status(400).json({ error: 'Broker name required' });
+  db.get("SELECT CASE WHEN tier_expires_at IS NOT NULL AND tier_expires_at <= CURRENT_TIMESTAMP THEN 'free' ELSE tier END AS tier FROM users WHERE id = ?", [req.user.id], (userErr, user) => {
+    if (userErr || !user) return res.status(404).json({ error: 'User not found' });
+    db.get("SELECT COUNT(*) AS count FROM brokers WHERE user_id = ? AND name != 'Demo Account'", [req.user.id], (countErr, row) => {
+      if (countErr) return res.status(500).json({ error: 'Could not verify plan limit' });
+      const isDemo = name === 'Demo Account';
+      const limit = (TIER_LIMITS[user.tier] || TIER_LIMITS.free).brokers;
+      if (!isDemo && row.count >= limit) return res.status(403).json({ error: `Your ${user.tier} plan does not allow another broker connection` });
+      db.run('INSERT INTO brokers (user_id, name, api_key, account_type) VALUES (?, ?, ?, ?)', [req.user.id, name, api_key || null, account_type], function(err) {
+        if (err) return res.status(500).json({ error: 'Could not connect broker' });
+        res.json({ id: this.lastID, name, account_type });
+      });
+    });
+  });
 });
 
-// ============ PAYPAL (real Orders v2 flow) ============
+// ============ VERIFIED PAYMENTS ============
+const dbGet = (sql, params = []) => new Promise((resolve, reject) => db.get(sql, params, (err, row) => err ? reject(err) : resolve(row)));
+const dbRun = (sql, params = []) => new Promise((resolve, reject) => db.run(sql, params, function(err) { err ? reject(err) : resolve(this); }));
+
+function paymentError(error, fallback) {
+  const detail = error.response?.data?.errors?.[0]?.detail || error.response?.data?.message;
+  console.error(fallback, error.response?.data || error.message);
+  return detail || fallback;
+}
+
+async function fulfillPayment(payment, providerEventId = null) {
+  if (payment.status === 'completed') return payment;
+  await dbRun('BEGIN IMMEDIATE');
+  try {
+    const current = await dbGet('SELECT * FROM payments WHERE id = ?', [payment.id]);
+    if (current.status !== 'completed') {
+      await dbRun("UPDATE payments SET status = 'completed', provider_event_id = COALESCE(provider_event_id, ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?", [providerEventId, payment.id]);
+      await dbRun("UPDATE users SET tier = ?, tier_expires_at = datetime(CASE WHEN tier_expires_at > CURRENT_TIMESTAMP THEN tier_expires_at ELSE CURRENT_TIMESTAMP END, '+30 days') WHERE id = ?", [current.tier, current.user_id]);
+    }
+    await dbRun('COMMIT');
+    return { ...current, status: 'completed' };
+  } catch (error) {
+    await dbRun('ROLLBACK').catch(() => {});
+    throw error;
+  }
+}
+
+function paypalCapture(order) {
+  return order.purchase_units?.flatMap(unit => unit.payments?.captures || []).find(capture => capture.status === 'COMPLETED');
+}
+
 async function getPayPalAccessToken() {
   const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_SECRET}`).toString('base64');
   const res = await axios.post(
@@ -366,68 +461,161 @@ async function getPayPalAccessToken() {
 
 app.post('/api/payments/paypal/create-order', authenticate, async (req, res) => {
   const { tier } = req.body;
-  const prices = { starter: '29.00', premium: '79.00', unlimited: '199.00' };
-  if (!prices[tier]) return res.status(400).json({ error: 'Invalid tier' });
+  const plan = PLANS[tier]?.paypal;
+  if (!plan) return res.status(400).json({ error: 'Invalid tier' });
+  if (!PAYPAL_CLIENT_ID || !PAYPAL_SECRET) return res.status(503).json({ error: 'PayPal is not configured' });
 
   try {
+    const pending = await dbRun(
+      'INSERT INTO payments (user_id, amount, currency, method, status, tier) VALUES (?, ?, ?, ?, ?, ?)',
+      [req.user.id, Number(plan.amount), plan.currency, 'paypal', 'pending', tier]
+    );
     const accessToken = await getPayPalAccessToken();
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
     const orderRes = await axios.post(
       `${PAYPAL_BASE}/v2/checkout/orders`,
       {
         intent: 'CAPTURE',
         purchase_units: [{
-          amount: { currency_code: 'USD', value: prices[tier] },
-          description: `TradeMind Pro - ${tier} plan`
+          amount: { currency_code: plan.currency, value: plan.amount },
+          description: `TradeMind Pro - ${tier} plan`,
+          custom_id: String(pending.lastID),
+          invoice_id: `TMP-${pending.lastID}`
         }],
         application_context: {
-          return_url: `${baseUrl}/?paypal_return=1&tier=${tier}`,
-          cancel_url: `${baseUrl}/?paypal_cancel=1`,
+          return_url: `${APP_BASE_URL}/?paypal_return=1`,
+          cancel_url: `${APP_BASE_URL}/?paypal_cancel=1`,
           user_action: 'PAY_NOW'
         }
       },
-      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'PayPal-Request-Id': `create-${pending.lastID}` } }
     );
 
     const approveLink = orderRes.data.links.find(l => l.rel === 'approve');
-    res.json({ order_id: orderRes.data.id, approve_url: approveLink ? approveLink.href : null, tier, amount: prices[tier] });
+    await dbRun('UPDATE payments SET provider_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [orderRes.data.id, pending.lastID]);
+    res.json({ order_id: orderRes.data.id, approve_url: approveLink?.href || null });
   } catch (e) {
-    console.error('PayPal create-order error:', e.response?.data || e.message);
-    res.status(500).json({ error: 'Failed to create PayPal order' });
+    res.status(502).json({ error: paymentError(e, 'Failed to create PayPal order') });
   }
 });
 
 app.post('/api/payments/paypal/capture-order', authenticate, async (req, res) => {
-  const { order_id, tier } = req.body;
-  const prices = { starter: 29, premium: 79, unlimited: 199 };
-  if (!order_id || !prices[tier]) return res.status(400).json({ error: 'Missing order_id or invalid tier' });
+  const { order_id } = req.body;
+  if (!order_id) return res.status(400).json({ error: 'Missing order_id' });
 
   try {
+    const payment = await dbGet('SELECT * FROM payments WHERE method = ? AND provider_id = ? AND user_id = ?', ['paypal', order_id, req.user.id]);
+    if (!payment) return res.status(404).json({ error: 'Payment not found' });
+    if (payment.status === 'completed') return res.json({ success: true, tier: payment.tier });
     const accessToken = await getPayPalAccessToken();
     const captureRes = await axios.post(
       `${PAYPAL_BASE}/v2/checkout/orders/${order_id}/capture`,
       {},
-      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
+      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json', 'PayPal-Request-Id': `capture-${payment.id}` } }
     );
-
-    if (captureRes.data.status !== 'COMPLETED') {
-      return res.status(400).json({ error: `Payment not completed (status: ${captureRes.data.status})` });
+    const capture = paypalCapture(captureRes.data);
+    if (!capture) return res.status(409).json({ error: 'PayPal capture is not completed' });
+    if (capture.amount?.currency_code !== payment.currency || capture.amount?.value !== Number(payment.amount).toFixed(2)) {
+      return res.status(409).json({ error: 'PayPal amount verification failed' });
     }
-
-    db.run('UPDATE users SET tier = ? WHERE id = ?', [tier, req.user.id]);
-    db.run(
-      'INSERT INTO payments (user_id, amount, currency, method, status, tier) VALUES (?, ?, ?, ?, ?, ?)',
-      [req.user.id, prices[tier], 'USD', 'paypal', 'completed', tier]
-    );
-
-    res.json({ success: true, tier });
+    if (captureRes.data.purchase_units?.[0]?.custom_id !== String(payment.id)) return res.status(409).json({ error: 'PayPal reference verification failed' });
+    await fulfillPayment(payment, capture.id);
+    res.json({ success: true, tier: payment.tier });
   } catch (e) {
-    console.error('PayPal capture-order error:', e.response?.data || e.message);
-    res.status(500).json({ error: 'Failed to capture PayPal order' });
+    res.status(502).json({ error: paymentError(e, 'Failed to capture PayPal order') });
   }
 });
 
-app.get('/api/health', (req, res) => res.json({ status: 'ok' }));
+app.post('/api/webhooks/paypal', async (req, res) => {
+  if (!PAYPAL_WEBHOOK_ID || !PAYPAL_CLIENT_ID || !PAYPAL_SECRET) return res.sendStatus(503);
+  try {
+    const accessToken = await getPayPalAccessToken();
+    const verification = await axios.post(`${PAYPAL_BASE}/v1/notifications/verify-webhook-signature`, {
+      auth_algo: req.get('paypal-auth-algo'), cert_url: req.get('paypal-cert-url'), transmission_id: req.get('paypal-transmission-id'),
+      transmission_sig: req.get('paypal-transmission-sig'), transmission_time: req.get('paypal-transmission-time'),
+      webhook_id: PAYPAL_WEBHOOK_ID, webhook_event: req.body
+    }, { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } });
+    if (verification.data.verification_status !== 'SUCCESS') return res.sendStatus(400);
+    if (req.body.event_type === 'PAYMENT.CAPTURE.COMPLETED') {
+      const orderId = req.body.resource?.supplementary_data?.related_ids?.order_id;
+      const payment = orderId && await dbGet('SELECT * FROM payments WHERE method = ? AND provider_id = ?', ['paypal', orderId]);
+      if (payment && req.body.resource.amount?.currency_code === payment.currency && req.body.resource.amount?.value === Number(payment.amount).toFixed(2)) {
+        await fulfillPayment(payment, req.body.id);
+      }
+    }
+    res.sendStatus(200);
+  } catch (error) {
+    console.error('PayPal webhook error:', error.response?.data || error.message);
+    res.sendStatus(500);
+  }
+});
+
+function verifyPayMongoSignature(req) {
+  if (!PAYMONGO_WEBHOOK_SECRET || !req.rawBody) return false;
+  const parts = Object.fromEntries((req.get('paymongo-signature') || '').split(',').map(part => part.trim().split('=')));
+  const signature = PAYMONGO_MODE === 'live' ? parts.li : parts.te;
+  if (!parts.t || !signature || Math.abs(Date.now() / 1000 - Number(parts.t)) > 300) return false;
+  const expected = crypto.createHmac('sha256', PAYMONGO_WEBHOOK_SECRET).update(`${parts.t}.${req.rawBody.toString('utf8')}`).digest('hex');
+  const a = Buffer.from(signature, 'hex'); const b = Buffer.from(expected, 'hex');
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+app.post('/api/payments/paymongo/create-checkout', authenticate, async (req, res) => {
+  const { tier } = req.body;
+  const plan = PLANS[tier]?.paymongo;
+  if (!plan || !Number.isInteger(plan.amount) || plan.amount < 10000) return res.status(503).json({ error: 'PayMongo pricing is not configured' });
+  if (!PAYMONGO_SECRET_KEY) return res.status(503).json({ error: 'PayMongo is not configured' });
+  try {
+    const pending = await dbRun('INSERT INTO payments (user_id, amount, currency, method, status, tier) VALUES (?, ?, ?, ?, ?, ?)', [req.user.id, plan.amount / 100, plan.currency, 'paymongo', 'pending', tier]);
+    const checkout = await axios.post(`${PAYMONGO_BASE}/checkout_sessions`, { data: { attributes: {
+      billing: { name: req.user.username },
+      cancel_url: `${APP_BASE_URL}/?paymongo_cancel=1`, success_url: `${APP_BASE_URL}/?paymongo_return=1&payment=${pending.lastID}`,
+      description: `TradeMind Pro - ${tier} plan`, line_items: [{ amount: plan.amount, currency: plan.currency, name: `${tier[0].toUpperCase() + tier.slice(1)} plan`, quantity: 1 }],
+      payment_method_types: ['card', 'gcash', 'paymaya'], reference_number: `TMP-${pending.lastID}`, send_email_receipt: true, show_line_items: true
+    } } }, { auth: { username: PAYMONGO_SECRET_KEY, password: '' }, headers: { 'Content-Type': 'application/json' } });
+    const session = checkout.data.data;
+    await dbRun('UPDATE payments SET provider_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?', [session.id, pending.lastID]);
+    res.json({ checkout_url: session.attributes.checkout_url, payment_id: pending.lastID });
+  } catch (error) {
+    res.status(502).json({ error: paymentError(error, 'Failed to create PayMongo checkout') });
+  }
+});
+
+app.post('/api/webhooks/paymongo', async (req, res) => {
+  if (!verifyPayMongoSignature(req)) return res.sendStatus(400);
+  try {
+    const event = req.body.data;
+    if (event?.attributes?.type === 'checkout_session.payment.paid') {
+      const session = event.attributes.data;
+      const payment = await dbGet('SELECT * FROM payments WHERE method = ? AND provider_id = ?', ['paymongo', session.id]);
+      const attributes = session.attributes || {};
+      const intent = attributes.payment_intent?.attributes || {};
+      const paidAmount = intent.amount ?? attributes.line_items?.reduce((sum, item) => sum + item.amount * item.quantity, 0);
+      const currency = String(intent.currency || attributes.line_items?.[0]?.currency || '').toUpperCase();
+      const modeMatches = Boolean(event.attributes.livemode) === (PAYMONGO_MODE === 'live');
+      if (payment && modeMatches && attributes.reference_number === `TMP-${payment.id}` && paidAmount === Math.round(payment.amount * 100) && currency === payment.currency) {
+        await fulfillPayment(payment, event.id);
+      }
+    }
+    res.sendStatus(200);
+  } catch (error) {
+    console.error('PayMongo webhook error:', error.message);
+    res.sendStatus(500);
+  }
+});
+
+app.get('/api/payments/:id/status', authenticate, async (req, res) => {
+  const payment = await dbGet('SELECT id, status, tier, method FROM payments WHERE id = ? AND user_id = ?', [req.params.id, req.user.id]);
+  if (!payment) return res.status(404).json({ error: 'Payment not found' });
+  res.json(payment);
+});
+
+app.get('/api/health', (_req, res) => res.json({
+  status: 'ok',
+  payments: {
+    paypal: Boolean(PAYPAL_CLIENT_ID && PAYPAL_SECRET && PAYPAL_WEBHOOK_ID),
+    paymongo: Boolean(PAYMONGO_SECRET_KEY && PAYMONGO_WEBHOOK_SECRET)
+  }
+}));
 
 // ============ BOT AUTOMATION (demo bots only) ============
 const botLastPrice = {};
@@ -504,5 +692,8 @@ cron.schedule('*/1 * * * *', () => {
   runBotAutomation();
 });
 
-app.listen(PORT, () => console.log(`✓ Server running on port ${PORT}`));
+cron.schedule('17 * * * *', () => {
+  db.run("UPDATE users SET tier = 'free', tier_expires_at = NULL WHERE tier_expires_at IS NOT NULL AND tier_expires_at <= CURRENT_TIMESTAMP");
+});
 
+app.listen(PORT, () => console.log(`✓ Server running on port ${PORT}`));

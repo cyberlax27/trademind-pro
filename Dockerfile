@@ -1,13 +1,14 @@
-FROM node:18-alpine
+FROM node:22-alpine
 
 WORKDIR /app
 
 COPY package*.json ./
-RUN npm install
+RUN npm ci --omit=dev
 
-COPY server.js ./server.js
-COPY .env ./.env
+COPY server.js app.js index.html ./
+COPY public ./public
+COPY logo-clean.png logo-community.png ./
 
 EXPOSE 5000
 
-CMD ["npm", "start"]
+CMD ["node", "server.js"]
